@@ -44,8 +44,7 @@ function spawnRpcWorker(cwd: string, model?: string): {
   send(obj: Record<string, unknown>): void;
   events(): AsyncGenerator<Record<string, unknown>>;
 } {
-  const args: string[] = ["--mode", "rpc", "--no-session"];
-  if (model) args.push("--model", model);
+  const args: string[] = ["--mode", "rpc", "--no-session", "--model", model ?? "zai/glm-5.1"];
   const piCmd = process.platform === "win32"
     ? ["cmd", "/c", "D:\\nodeJS\\pi.cmd"]
     : ["pi"];
