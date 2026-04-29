@@ -93,15 +93,16 @@ import type { WorkerConfig, WorkerInfo, AgentConfig, AgentScope, AgentDiscoveryR
 ```
 aim/
 ├── README.md          ← This file
-├── index.ts           ← Extension entry (25 KB): registers subagent, send_message, coordinator, teams, permissions
-├── types.ts           ← Shared type definitions: WorkerConfig, AgentConfig, TeammateMessage, TeamFile, TaskItem, CronJob
-├── worker-pool.ts     ← Process lifecycle: spawn/kill/wait child pi processes, parse JSON stdout, concurrency limiting (4/8)
+├── index.ts           ← Extension entry: registers subagent, send_message, coordinator, teams, permissions
+├── types.ts           ← Shared type definitions: WorkerConfig, AgentConfig, TeammateMessage, TeamFile, TaskItem, CronJob, SubagentSpawnData, SubagentResultData
+├── worker-pool.ts     ← Process lifecycle: two modes (print/one-shot, RPC/long-lived), spawn/kill/wait/steer/followUp/abort
 ├── mailbox.ts         ← File-based inbox: JSON read/write with retry-locking, message filtering, protocol helpers
+├── aim-transcript.ts  ← Subagent transcript persistence: sidechain JSONL files, parent tree annotation via custom entries
 ├── send-message.ts    ← SendMessage tool: route messages to inbox or broadcast (*)
 ├── coordinator.ts     ← Coordinator mode: toggle, prompt injection via before_agent_start, session persistence
 ├── teams.ts           ← Team management: create/delete teams, spawn teammates, team file I/O
 ├── poller.ts          ← Inbox poller: blocking while-loop for continuous agent operation
-├── permissions.ts    ← Permission bridge: intercept dangerous bash commands, request user confirmation
+├── permissions.ts     ← Permission bridge: intercept dangerous bash commands, request user confirmation
 ├── render.ts          ← TUI rendering: tool call/result components, usage stats formatting
 └── agents.ts          ← Agent definition loader: parse .md frontmatter, discover user/project agents
 ```
@@ -124,11 +125,22 @@ aim/
 
 ## Change Log
 
+### 2026-04-29
+- **P0: Long-lived workers (RPC mode)** — WorkerPool now supports two modes:
+  - Print mode (`--mode json -p`): one-shot, fast, for simple tasks
+  - RPC mode (`--mode rpc`): long-lived, supports steer/followUp/abort, used for fork & background agents
+- **P0: Resume agent** — Subagent conversations persisted as sidechain JSONL files (`.pi/aim/agents/{agentId}.jsonl`)
+  - Metadata stored in companion `.meta.json` files
+  - Parent tree annotated with `aim-subagent-spawn` and `aim-subagent-result` custom entries
+  - New `resume` parameter on subagent tool
+- New module: `aim-transcript.ts` for sidechain persistence and tree annotation
+- `WorkerInfo` extended with `process` (ChildProcess ref) and `rpcSend` (stdin helper)
+
 ### 2026-04-28
 - Implemented all core modules: types, worker-pool, mailbox, agents, render
 - Implemented subagent tool (single/parallel/chain/fork/background modes)
-- Implemented send_message tool (point-to-point + broadcast)
-- Implemented coordinator mode (/coordinator command + prompt injection)
-- Implemented team management (team_create, team_delete, spawnTeammate)
-- Implemented permission bridge (dangerous command detection + confirmation)
-- Implemented inbox poller (continuous polling loop for long-lived agents)
+- Implemented send_message tool
+- Implemented coordinator mode
+- Implemented team management
+- Implemented permission bridge
+- Implemented inbox poller

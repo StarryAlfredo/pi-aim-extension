@@ -34,6 +34,10 @@ export interface WorkerConfig {
   forkFrom?: string;
   /** System prompt override (appended to worker's system prompt) */
   systemPrompt?: string;
+  /** If true, use RPC mode (long-lived). If false/undefined, use print mode (one-shot) */
+  rpcMode?: boolean;
+  /** Agent ID for transcript persistence and resume */
+  agentId?: string;
 }
 
 /** Runtime state of a managed worker */
@@ -54,6 +58,10 @@ export interface WorkerInfo {
   doneResolve?: () => void;
   /** Reject function for donePromise */
   doneReject?: (err: Error) => void;
+  /** ChildProcess reference (for RPC mode stdin/stdout communication) */
+  process?: import("node:child_process").ChildProcess;
+  /** RPC send helper (writes JSON line to stdin) */
+  rpcSend?: (json: string) => void;
 }
 
 // ============================================================================
@@ -202,4 +210,57 @@ export function getTasksDir(cwd: string, teamName: string): string {
 /** Scheduled tasks file path */
 export function getCronFilePath(cwd: string): string {
   return nodePath.join(getAimDir(cwd), "scheduled_tasks.json");
+}
+
+/** Agent transcript directory */
+export function getAgentTranscriptDir(cwd: string): string {
+  return nodePath.join(getAimDir(cwd), "agents");
+}
+
+/** Agent transcript file path for a specific agent ID */
+export function getAgentTranscriptPath(cwd: string, agentId: string): string {
+  return nodePath.join(getAgentTranscriptDir(cwd), `${agentId}.jsonl`);
+}
+
+/** Agent metadata file path */
+export function getAgentMetadataPath(cwd: string, agentId: string): string {
+  return nodePath.join(getAgentTranscriptDir(cwd), `${agentId}.meta.json`);
+}
+
+// ============================================================================
+// Subagent Transcript (sidechain persistence)
+// ============================================================================
+
+/** Custom entry type for AIM subagent spawn records */
+export const AIM_SUBAGENT_SPAWN_TYPE = "aim-subagent-spawn";
+
+/** Custom entry type for AIM subagent result records */
+export const AIM_SUBAGENT_RESULT_TYPE = "aim-subagent-result";
+
+/** Data stored in a subagent spawn custom entry */
+export interface SubagentSpawnData {
+  agentId: string;
+  agent: string;
+  task: string;
+  model?: string;
+  tools?: string[];
+  background: boolean;
+  forkMode: boolean;
+  transcriptFile: string;
+}
+
+/** Data stored in a subagent result custom entry */
+export interface SubagentResultData {
+  agentId: string;
+  status: "completed" | "failed" | "aborted";
+  summary: string;
+  usage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    turns: number;
+  };
+  exitCode: number;
+  model?: string;
 }
