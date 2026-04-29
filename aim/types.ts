@@ -125,6 +125,19 @@ export interface TeamFile {
   members: TeamMember[];
 }
 
+/** Configuration for spawning a teammate */
+export interface SpawnTeammateConfig {
+  name: string;
+  prompt: string;
+  team_name?: string;
+  agent_type?: string;
+  model?: string;
+  plan_mode_required?: boolean;
+  color?: string;
+  description?: string;
+  cwd?: string;
+}
+
 // ============================================================================
 // Tasks
 // ============================================================================
@@ -165,32 +178,28 @@ export interface CronJob {
 // ============================================================================
 
 /** Base directory for all AIM persistent state */
+import * as nodePath from "node:path";
+
 export function getAimDir(cwd: string): string {
-  // Using .pi/aim/ to avoid conflicting with pi's native .pi/ directory uses
-  const { join } = require("node:path") as typeof import("node:path");
-  return join(cwd, ".pi", "aim");
+  return nodePath.join(cwd, ".pi", "aim");
 }
 
 /** Team files directory */
 export function getTeamsDir(cwd: string): string {
-  const { join } = require("node:path") as typeof import("node:path");
-  return join(getAimDir(cwd), "teams");
+  return nodePath.join(getAimDir(cwd), "teams");
 }
 
 /** Inbox directory for a specific team */
 export function getInboxesDir(cwd: string, teamName: string): string {
-  const { join } = require("node:path") as typeof import("node:path");
-  return join(getTeamsDir(cwd), teamName, "inboxes");
+  return nodePath.join(getTeamsDir(cwd), teamName, "inboxes");
 }
 
 /** Task list directory for a specific team */
 export function getTasksDir(cwd: string, teamName: string): string {
-  const { join } = require("node:path") as typeof import("node:path");
-  return join(getAimDir(cwd), "tasks", teamName);
+  return nodePath.join(getAimDir(cwd), "tasks", teamName);
 }
 
 /** Scheduled tasks file path */
 export function getCronFilePath(cwd: string): string {
-  const { join } = require("node:path") as typeof import("node:path");
-  return join(getAimDir(cwd), "scheduled_tasks.json");
+  return nodePath.join(getAimDir(cwd), "scheduled_tasks.json");
 }

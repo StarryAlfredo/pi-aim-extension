@@ -12,6 +12,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@mariozechner/pi-ai";
@@ -31,8 +32,7 @@ const MAX_TOTAL = 8;
 /** Check if a file exists */
 function fileExists(p: string): boolean {
   try {
-    const { statSync } = require("node:fs") as typeof import("node:fs");
-    statSync(p);
+    fs.statSync(p);
     return true;
   } catch {
     return false;
@@ -41,11 +41,29 @@ function fileExists(p: string): boolean {
 
 /** Get the pi executable path. Tries current process argv first, falls back to "pi" */
 function getPiCommand(): { command: string; args: string[] } {
+  // First try: the actual node script that invoked pi
   const execPath = process.argv[1];
   if (execPath && fileExists(execPath)) {
     return { command: process.execPath, args: [execPath] };
   }
-  return { command: "pi", args: [] };
+
+  // Second try: look for pi in the same directory as node
+  if (process.execPath) {
+    const nodeDir = path.dirname(process.execPath);
+    const candidates = [
+      path.join(nodeDir, "pi.cmd"),
+      path.join(nodeDir, "pi"),
+      path.join(nodeDir, "node_modules", ".bin", "pi.cmd"),
+      path.join(nodeDir, "node_modules", ".bin", "pi"),
+    ];
+    for (const c of candidates) {
+      if (fileExists(c)) return { command: c, args: [] };
+    }
+  }
+
+  // Fallback: just "pi" (works on Unix, may need .cmd on Windows)
+  const isWindows = process.platform === "win32";
+  return { command: isWindows ? "pi.cmd" : "pi", args: [] };
 }
 
 // ============================================================================
@@ -120,12 +138,14 @@ export class WorkerPool {
       stderr: "",
     };
 
+    // Always set up donePromise for state tracking
+    info.donePromise = new Promise((resolve, reject) => {
+      info.doneResolve = resolve;
+      info.doneReject = reject;
+    });
+    // Catch unhandled rejections for background workers
     if (config.background) {
-      // Fire-and-forget: set up donePromise for tracking but don't block
-      info.donePromise = new Promise((resolve, reject) => {
-        info.doneResolve = resolve;
-        info.doneReject = reject;
-      });
+      info.donePromise.catch(() => { /* fire-and-forget */ });
     }
 
     this.workers.set(workerId, info);

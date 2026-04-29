@@ -25,7 +25,7 @@ import { workerPool } from "./worker-pool.js";
 // Module State
 // ============================================================================
 
-/** Currently active team for the leader */
+/** Currently active team for the leader (initialized to null to prevent TDZ) */
 let activeTeam: { name: string; filePath: string; leadAgentId: string } | null = null;
 
 // ============================================================================

@@ -51,10 +51,13 @@ function getInboxPath(cwd: string, agentName: string, teamName: string): string 
   return path.join(dir, `${safeName}.json`);
 }
 
-/** Ensure the inbox directory exists */
+/** Ensure the inbox directory exists (safe for concurrent calls) */
 function ensureDir(dir: string) {
-  if (!fs.existsSync(dir)) {
+  try {
     fs.mkdirSync(dir, { recursive: true });
+  } catch (err: any) {
+    // EEXIST is fine in race conditions
+    if (err.code !== "EEXIST") throw err;
   }
 }
 
@@ -71,7 +74,9 @@ export async function readMailbox(
   const inboxPath = getInboxPath(cwd, agentName, teamName);
   try {
     const raw = fs.readFileSync(inboxPath, "utf-8");
-    return JSON.parse(raw) as TeammateMessage[];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as TeammateMessage[];
   } catch {
     return [];
   }
@@ -95,7 +100,14 @@ export async function writeToMailbox(
   teamName: string,
 ): Promise<void> {
   const inboxPath = getInboxPath(cwd, recipient, teamName);
-  ensureDir(path.dirname(inboxPath));
+  const dir = path.dirname(inboxPath);
+
+  // Ensure directory exists BEFORE acquiring lock and writing (safe for concurrent calls)
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err: any) {
+    if (err.code !== "EEXIST") throw err;
+  }
 
   const fullMsg: TeammateMessage = { ...msg, read: false };
 
