@@ -12,11 +12,11 @@ Tests the complete communication cycle introduced in the P1 milestone:
 |------|------|---------------|
 | Test 1 | `agent_end` detection | RPC workers signal completion via `agent_end` event, worker stays alive afterward |
 | Test 2 | `steer` interrupt | Sending a `steer` command interrupts the current execution and injects new instructions |
-| Test 3 | `follow_up` | Queued `follow_up` messages execute after the current prompt completes, enabling multi-turn |
+| Test 3 | Multi-turn (sequential prompts) | Sending sequential `prompt` commands to the same RPC worker triggers multiple `agent_end` events |
 | Test 4 | Mailbox → RPC steer | Leader-to-worker messages are routed through mailbox, then converted to RPC steer for delivery |
 | Test 5 | Idle notification | Worker → Leader notification that a task is complete, including usage stats |
 | Test 6 | Coordinator pipeline | `agent_end` → task-notification XML formatting for coordinator result reporting |
-| Test 7 | E2E coordinator workflow | Full cycle: scout finds files → worker fixes → steer to verify (3-phase coordinator flow) |
+| Test 7 | E2E coordinator workflow | Full cycle: scout finds files → prompt for fix → prompt for verify (3-phase using prompts) |
 
 ### Covered Features
 

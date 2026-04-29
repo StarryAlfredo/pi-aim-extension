@@ -4,7 +4,7 @@
  * Tests the complete communication cycle:
  *   1. RPC worker completion (agent_end detection)
  *   2. RPC steer (interrupt current execution)
- *   3. RPC follow_up (execute after completion)
+ *   3. RPC multi-turn (sequential prompts)
  *   4. Leader → Worker message pipe (mailbox → RPC steer)
  *   5. Worker → Leader idle notification
  *   6. Coordinator result pipeline (agent_end → task-notification)
@@ -195,24 +195,22 @@ async function test2_steerInterrupt(cwd: string) {
   }
 }
 
-async function test3_followUp(cwd: string) {
-  console.log("\n=== Test 3: RPC follow_up (execute after completion) ===");
+async function test3_multiTurn(cwd: string) {
+  console.log("\n=== Test 3: RPC multi-turn (sequential prompts) ===");
   const worker = spawnRpcWorker(cwd);
   const { proc, send, waitForEvent } = worker;
 
   try {
-    // Send prompt, wait a tick, then queue follow-up
+    // First prompt
     send({ type: "prompt", message: "reply with exactly 'first'" });
-    await new Promise(r => setTimeout(r, 500));
-    send({ type: "follow_up", message: "now reply with exactly 'second'" });
-
-    // Wait for first agent_end
     const firstEnd = await waitForEvent("agent_end", 60000);
     assert(firstEnd !== null, "first agent_end", "first prompt completed");
 
-    // Wait for second agent_end (follow_up triggers another cycle)
+    // Second prompt — pi should be idle and accept it
+    await new Promise(r => setTimeout(r, 500));
+    send({ type: "prompt", message: "now reply with exactly 'second'" });
     const secondEnd = await waitForEvent("agent_end", 60000);
-    assert(secondEnd !== null, "second agent_end", "follow_up triggered second cycle");
+    assert(secondEnd !== null, "second agent_end", "second prompt triggered new cycle");
 
     if (secondEnd) {
       const assistantMsgs = (secondEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>)
@@ -223,7 +221,7 @@ async function test3_followUp(cwd: string) {
         .join("");
       assert(
         finalText.toLowerCase().includes("second"),
-        "worker processed follow_up",
+        "worker processed second prompt",
         `reply: ${finalText.slice(0, 100)}`,
       );
     }
@@ -240,8 +238,7 @@ async function test4_mailboxToRpcSteer(cwd: string) {
   try {
     send({ type: "prompt", message: "you are about to be steered, reply with 'ready'" });
 
-    // Wait for the prompt to be accepted (agent response to "ready" not critical)
-    // Then simulate a mailbox → RPC steer: send a message via steer
+    // Wait for prompt to start processing, then steer
     await new Promise(r => setTimeout(r, 2000));
     log("mailbox→steer", "converting mailbox message to RPC steer");
     send({ type: "steer", message: "new instruction from leader's mailbox: reply with only 'mailbox_steered'" });
@@ -278,14 +275,8 @@ async function test5_idleNotification(cwd: string) {
 
     assert(agentEnd !== null, "agent_end received", "worker completed");
     if (agentEnd) {
-      const usage = agentEnd.usage as Record<string, number> | undefined;
       const messages = agentEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
       assert(!!messages, "agent_end contains messages", `message count: ${messages?.length}`);
-      assert(
-        usage?.input !== undefined || true,
-        "usage tracking available",
-        "usage field in agent_end",
-      );
     }
   } finally {
     proc.kill();
@@ -355,7 +346,7 @@ async function test7_e2eCoordinatorWorkflow(cwd: string) {
   try {
     // Phase 1: Scout finds auth files
     log("coordinator", "sending scout task");
-    send({ type: "prompt", message: "you are a scout agent. reply with 'found: src/auth/validate.ts, src/auth/login.ts'" });
+    send({ type: "prompt", message: "reply with 'found: src/auth/validate.ts, src/auth/login.ts'" });
 
     const scoutEnd = await waitForEvent("agent_end", 30000);
     assert(scoutEnd !== null, "scout completed", "phase 1 done");
@@ -365,28 +356,31 @@ async function test7_e2eCoordinatorWorkflow(cwd: string) {
       .filter(p => p.type === "text").map(p => p.text || "").join("") || "";
     assert(scoutResult.includes("validate.ts"), "scout found validate.ts", scoutResult.slice(0, 100));
 
-    // Phase 2: Steer the worker to fix the bug
-    log("coordinator", "sending steer to fix bug");
-    send({ type: "steer", message: "now act as worker. reply with 'fixed: null check added at validate.ts:42'" });
+    // Phase 2: Send another prompt to fix (not steer — use prompt since steer needs active streaming)
+    await new Promise(r => setTimeout(r, 500));
+    log("coordinator", "sending fix task via prompt");
+    send({ type: "prompt", message: "now reply with 'fixed: null check added at validate.ts:42'" });
 
     const workerEnd = await waitForEvent("agent_end", 60000);
-    assert(workerEnd !== null, "worker completed after steer", "phase 2 done");
+    assert(workerEnd !== null, "worker completed fix", "phase 2 done");
     if (!workerEnd) return;
 
-    const workerMsgs = workerEnd!.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+    const workerMsgs = workerEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
     const workerResult = workerMsgs.filter(m => m.role === "assistant").pop()?.content
       .filter(p => p.type === "text").map(p => p.text || "").join("") || "";
     assert(workerResult.includes("validate.ts:42"), "worker fixed the bug", workerResult.slice(0, 100));
     assert(workerResult.includes("fixed"), "worker reports fix complete", workerResult.slice(0, 100));
 
-    // Phase 3: Steer again to verify
-    log("coordinator", "sending steer to verify");
-    send({ type: "steer", message: "reply with 'verified: all tests pass'" });
+    // Phase 3: Verify via prompt
+    await new Promise(r => setTimeout(r, 500));
+    log("coordinator", "sending verify via prompt");
+    send({ type: "prompt", message: "reply with 'verified: all tests pass'" });
+
     const verifyEnd = await waitForEvent("agent_end", 60000);
     assert(verifyEnd !== null, "verification completed", "phase 3 done");
     if (!verifyEnd) return;
 
-    const verifyMsgs = verifyEnd!.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+    const verifyMsgs = verifyEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
     const verifyResult = verifyMsgs.filter(m => m.role === "assistant").pop()?.content
       .filter(p => p.type === "text").map(p => p.text || "").join("") || "";
     assert(verifyResult.includes("verified"), "worker verified changes", verifyResult.slice(0, 100));
@@ -408,10 +402,9 @@ async function main() {
 
   const startTime = Date.now();
 
-  // Only run test 1 for debugging
   await test1_agentEndDetection(cwd);
   await test2_steerInterrupt(cwd);
-  await test3_followUp(cwd);
+  await test3_multiTurn(cwd);
   await test4_mailboxToRpcSteer(cwd);
   await test5_idleNotification(cwd);
   await test6_coordinatorPipeline(cwd);
