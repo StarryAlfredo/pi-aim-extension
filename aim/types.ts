@@ -62,6 +62,8 @@ export interface WorkerInfo {
   process?: import("node:child_process").ChildProcess;
   /** RPC send helper (writes JSON line to stdin) */
   rpcSend?: (json: string) => void;
+  /** Number of agent_end events received */
+  turnCount?: number;
 }
 
 // ============================================================================

@@ -125,6 +125,16 @@ aim/
 
 ## Change Log
 
+### 2026-04-29 (P1)
+- **P1: agent_end completion signal** — RPC workers now use agent_end to signal completion
+  instead of the 120s poll/kill hack. Worker stays alive in idle state after each turn.
+- **P1: send_message → RPC steer bridge** — send_message detects active RPC workers
+  and delivers messages via steer for immediate delivery, falling back to mailbox.
+- **P1: task-notification format** — Updated coordinator prompt with `<task-notification>`
+  XML format specification and worker result handling instructions.
+- `WorkerInfo` now has `turnCount` for multi-turn tracking.
+- `WorkerPool` now has `resetDonePromise()` for multi-turn RPC cycling.
+
 ### 2026-04-29
 - **P0: Long-lived workers (RPC mode)** — WorkerPool now supports two modes:
   - Print mode (`--mode json -p`): one-shot, fast, for simple tasks

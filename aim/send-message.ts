@@ -61,9 +61,30 @@ export function registerSendMessage(pi: ExtensionAPI) {
         };
       }
 
-      // Point-to-point
+      // Point-to-point: try RPC steer first, fall back to mailbox
+      // Check if target is an active RPC worker in WorkerPool
+      const { workerPool } = await import("./worker-pool.js");
+      const targetWorker = workerPool.getAll().find(
+        (w) => w.config.name === params.to && w.state !== "dead" && w.rpcSend
+      );
+
+      if (targetWorker && targetWorker.config.workerId) {
+        // Direct RPC steer for immediate delivery
+        const steered = workerPool.steer(targetWorker.config.workerId, params.message);
+        if (steered) {
+          return {
+            content: [{
+              type: "text",
+              text: `Message delivered to ${params.to} via RPC steer.`,
+            }],
+            details: { success: true, recipient: params.to, method: "rpc_steer" },
+          };
+        }
+      }
+
+      // Fallback: write to file inbox (worker may poll it later)
       await writeToMailbox(cwd, params.to, {
-        from: "user", // TODO: derive from current agent identity
+        from: "user",
         text: params.message,
         timestamp: new Date().toISOString(),
         summary: params.summary,
@@ -74,7 +95,7 @@ export function registerSendMessage(pi: ExtensionAPI) {
           type: "text",
           text: `Message sent to ${params.to}'s inbox.`,
         }],
-        details: { success: true, recipient: params.to },
+        details: { success: true, recipient: params.to, method: "mailbox" },
       };
     },
 

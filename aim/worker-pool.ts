@@ -10,6 +10,12 @@
  *     Process stays alive. Commands sent via stdin JSON, events received via stdout.
  *     Supports steering, follow-up, abort, and multi-turn conversations.
  *     Used for: fork (inherit context), background agents that can be resumed.
+ *
+ *   agent_end handling (P1):
+ *     - agent_end = worker completed one prompt cycle. Sets worker state to "idle",
+ *       resolves donePromise so callers can wait for completion.
+ *     - worker stays alive in idle state, ready for next command (steer/follow_up/resume).
+ *     - close event only fires on kill() or print mode exit.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -73,6 +79,7 @@ export class WorkerPool {
    * RPC mode (rpcMode: true):
    *   pi --mode rpc --no-session [--model X] [--tools a,b]
    *   Process stays alive. Initial prompt sent via stdin.
+   *   donePromise resolves on agent_end, NOT on process close.
    */
   spawn(config: Omit<WorkerConfig, "workerId">): string {
     const workerId = randomUUID();
@@ -107,8 +114,12 @@ export class WorkerPool {
       rpcSend: isRpc ? (json: string) => {
         if (!proc.stdin?.destroyed) proc.stdin?.write(json + "\n");
       } : undefined,
+      /** Number of agent_end events received (for multi-turn tracking) */
+      turnCount: 0,
     };
 
+    // donePromise: resolves on agent_end (RPC) or close (print)
+    // Reset for each turn in RPC mode via resetDonePromise()
     info.donePromise = new Promise((resolve, reject) => {
       info.doneResolve = resolve;
       info.doneReject = reject;
@@ -134,23 +145,42 @@ export class WorkerPool {
     proc.on("close", (code) => {
       info.state = "dead";
       info.exitCode = code ?? undefined;
-      code === 0 ? info.doneResolve?.() : info.doneReject?.(new Error(`Worker exited with code ${code}`));
+      // Resolve donePromise if still pending (e.g. print mode, or kill() before agent_end)
+      if (info.doneResolve) {
+        code === 0 ? info.doneResolve() : info.doneReject?.(new Error(`Worker exited with code ${code}`));
+      }
     });
 
     proc.on("error", (err) => {
       info.state = "dead";
       info.exitCode = 1;
       info.stderr += err.message;
-      info.doneReject?.(err);
+      if (info.doneReject) info.doneReject(err);
     });
 
     return workerId;
   }
 
+  /**
+   * Reset donePromise for the next turn in RPC mode.
+   * Called after agent_end when a new prompt is being sent (steer/follow_up).
+   */
+  private resetDonePromise(info: WorkerInfo) {
+    if (info.doneResolve) {
+      // Previous promise already resolved — create new one
+      info.donePromise = new Promise((resolve, reject) => {
+        info.doneResolve = resolve;
+        info.doneReject = reject;
+      });
+    }
+  }
+
   /** Send a steering message to a running RPC worker (interrupts current tool execution) */
   steer(workerId: string, message: string): boolean {
     const info = this.workers.get(workerId);
-    if (!info?.rpcSend || info.state !== "running") return false;
+    if (!info?.rpcSend || (info.state !== "running" && info.state !== "idle")) return false;
+    this.resetDonePromise(info);
+    info.state = "running";
     info.rpcSend(JSON.stringify({ type: "steer", message }));
     return true;
   }
@@ -159,6 +189,8 @@ export class WorkerPool {
   followUp(workerId: string, message: string): boolean {
     const info = this.workers.get(workerId);
     if (!info?.rpcSend || info.state === "dead") return false;
+    this.resetDonePromise(info);
+    if (info.state !== "running") info.state = "running";
     info.rpcSend(JSON.stringify({ type: "follow_up", message }));
     return true;
   }
@@ -171,7 +203,16 @@ export class WorkerPool {
     return true;
   }
 
-  /** Parse JSON event stream from worker stdout (both print and RPC modes) */
+  /**
+   * Parse JSON event stream from worker stdout.
+   *
+   * Events collected:
+   *   - message_end, tool_result_end → appended to info.messages
+   *   - agent_end → sets info.state="idle", resolves donePromise, increments turnCount
+   *
+   * Print mode: process exits after last agent_end, close handler fires.
+   * RPC mode: agent_end fires but process stays alive for multi-turn.
+   */
   private attachStdout(proc: ChildProcess, info: WorkerInfo) {
     let buffer = "";
     proc.stdout?.on("data", (data: Buffer) => {
@@ -183,21 +224,38 @@ export class WorkerPool {
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line) as Record<string, unknown>;
-          // Collect message_end and tool_result_end events
+
+          // Collect messages
           if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
             info.messages.push(event.message as Message);
           }
-          // RPC mode: a "response" with success:false on prompt indicates error
-          // but we don't kill the process — just track it
-        } catch { /* ignore non-JSON */ }
+
+          // P1: agent_end = worker completed one turn
+          if (event.type === "agent_end") {
+            info.turnCount = (info.turnCount || 0) + 1;
+            info.state = "idle";
+
+            // Store usage from agent_end for idle notifications
+            if (event.usage) {
+              (info as Record<string, unknown>).lastUsage = event.usage;
+            }
+
+            // Resolve donePromise — callers waiting on waitFor() are unblocked
+            if (info.doneResolve) {
+              info.doneResolve();
+            }
+          }
+        } catch { /* ignore non-JSON lines */ }
       }
     });
   }
 
+  /** Kill a worker by ID. Returns true if worker existed. */
   kill(workerId: string): boolean {
     const info = this.workers.get(workerId);
     if (!info || info.state === "dead") return false;
     try {
+      info.state = "dead";
       process.kill(info.pid!, "SIGTERM");
       setTimeout(() => {
         if (info.state !== "dead") { try { process.kill(info.pid!, "SIGKILL"); } catch {} }
