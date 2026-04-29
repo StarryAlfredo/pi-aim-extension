@@ -52,43 +52,58 @@ AIM gives LLM the ability to create, coordinate, and communicate with child agen
 | Event | Handler | Purpose |
 |-------|---------|---------|
 | `before_agent_start` | Inject coordinator system prompt | When coordinator mode is active |
-| `agent_end` | Format worker results as `<task-notification>` | When coordinator mode is active |
-| `tool_call` | Permission bridge | Intercept dangerous operations, request user confirmation |
+| `agent_end` | (future) format worker results | Coordinator result formatting |
+| `tool_call` | Permission bridge | Intercept dangerous bash commands |
+| `session_start` | Restore coordinator state | Persist coordinator toggle across reloads |
 
 ### Exported Public API
 
 ```typescript
 import { workerPool } from "../aim/index.js";
-import { readMailbox, writeToMailbox, markRead } from "../aim/index.js";
-import { createTeam, deleteTeam, spawnTeammate } from "../aim/index.js";
+import { readMailbox, writeToMailbox, markMessageAsRead, isShutdownRequest, isPermissionResponse, createShutdownRequest, createShutdownApproval, createShutdownRejection, createIdleNotification } from "../aim/index.js";
+import { discoverAgents, formatAgentList } from "../aim/index.js";
+import { createTeam, deleteTeam, spawnTeammate, getActiveTeam } from "../aim/index.js";
+import { pollInbox, sendIdleNotification } from "../aim/index.js";
+import type { WorkerConfig, WorkerInfo, AgentConfig, AgentScope, AgentDiscoveryResult, TeammateMessage, TeamFile, TeamMember } from "../aim/index.js";
 ```
 
 | Export | Type | Description |
 |--------|------|-------------|
-| `workerPool` | `WorkerPool` | Singleton process manager. `spawn()`, `kill()`, `send()`, `onResult()` |
-| `readMailbox` | `(agentName: string, teamName: string) => Promise<TeammateMessage[]>` | Read all messages from an agent's inbox |
-| `writeToMailbox` | `(recipient: string, msg: TeammateMessage, team: string) => Promise<void>` | Write a message to an agent's inbox (file-locked) |
-| `markRead` | `(agentName: string, team: string, index: number) => Promise<void>` | Mark a message as read |
-| `createTeam` | `(name: string, description?: string) => Promise<Team>` | Create a new team, register leader |
-| `deleteTeam` | `(name: string) => Promise<void>` | Delete a team and clean up |
-| `spawnTeammate` | `(config: SpawnTeammateConfig, ctx: ExtensionContext) => Promise<SpawnOutput>` | Spawn a teammate in an existing team |
-| `startInboxPoller` | `(agentName: string, teamName: string, signal: AbortSignal) => Promise<Message \| null>` | Poll inbox for new messages/tasks (blocking while-loop) |
+| `workerPool` | `WorkerPool` | Singleton process manager. `spawn()`, `kill()`, `getInfo()`, `waitFor()`, `destroy()` |
+| `readMailbox` | `(cwd, agentName, teamName) => Promise<TeammateMessage[]>` | Read all inbox messages |
+| `writeToMailbox` | `(cwd, recipient, msg, team) => Promise<void>` | Write to inbox (file-locked) |
+| `markMessageAsRead` | `(cwd, agentName, team, index) => Promise<void>` | Mark message read |
+| `isShutdownRequest` | `(text) => {request_id, from, reason?} \| null` | Parse shutdown request |
+| `isPermissionResponse` | `(text) => {request_id, subtype, response?, error?} \| null` | Parse permission response |
+| `createShutdownRequest` | `(requestId, from, reason?) => string` | Build shutdown request JSON |
+| `createShutdownApproval` | `(requestId, from) => string` | Build approval JSON |
+| `createShutdownRejection` | `(requestId, from, reason) => string` | Build rejection JSON |
+| `createIdleNotification` | `(agentName, options?) => string` | Build idle notification |
+| `discoverAgents` | `(cwd, scope) => AgentDiscoveryResult` | Discover agent definitions |
+| `formatAgentList` | `(agents, maxItems) => {text, remaining}` | Format for LLM |
+| `createTeam` | `(cwd, name, description?) => Promise<TeamFile>` | Create team + task list |
+| `deleteTeam` | `(cwd, name) => Promise<void>` | Delete team |
+| `spawnTeammate` | `(cwd, config, agents) => Promise<{agentId, name, team}>` | Spawn teammate |
+| `getActiveTeam` | `() => {name, filePath, leadAgentId} \| null` | Get active team |
+| `pollInbox` | `(cwd, agentName, team, signal) => Promise<PollResult>` | Blocking poll loop |
+| `sendIdleNotification` | `(cwd, agentName, team, options?) => Promise<void>` | Notify leader of idle |
 
 ## File Architecture
 
 ```
 aim/
 ├── README.md          ← This file
-├── index.ts           ← Extension entry: registers all tools, commands, events
-├── worker-pool.ts     ← Process lifecycle: spawn pi subprocesses, track state, handle I/O
-├── mailbox.ts         ← File-based inbox: JSON read/write with file locking
-├── send-message.ts    ← SendMessage tool: route messages to inboxes or broadcast
-├── coordinator.ts     ← Coordinator mode: toggle and inject system prompt
-├── teams.ts           ← Team management: create/delete teams, spawn members
+├── index.ts           ← Extension entry (25 KB): registers subagent, send_message, coordinator, teams, permissions
+├── types.ts           ← Shared type definitions: WorkerConfig, AgentConfig, TeammateMessage, TeamFile, TaskItem, CronJob
+├── worker-pool.ts     ← Process lifecycle: spawn/kill/wait child pi processes, parse JSON stdout, concurrency limiting (4/8)
+├── mailbox.ts         ← File-based inbox: JSON read/write with retry-locking, message filtering, protocol helpers
+├── send-message.ts    ← SendMessage tool: route messages to inbox or broadcast (*)
+├── coordinator.ts     ← Coordinator mode: toggle, prompt injection via before_agent_start, session persistence
+├── teams.ts           ← Team management: create/delete teams, spawn teammates, team file I/O
 ├── poller.ts          ← Inbox poller: blocking while-loop for continuous agent operation
-├── permission.ts      ← Permission bridge: intercept tool calls, request user confirmation
-├── render.ts          ← TUI rendering: tool call/result display components
-└── agents.ts          ← Agent definition loader: parse .md frontmatter, discover agents
+├── permission.ts      ← Permission bridge: intercept dangerous bash commands, request user confirmation
+├── render.ts          ← TUI rendering: tool call/result components, usage stats formatting
+└── agents.ts          ← Agent definition loader: parse .md frontmatter, discover user/project agents
 ```
 
 ## Dependencies
@@ -102,13 +117,18 @@ aim/
 | State | Storage | Location |
 |-------|---------|----------|
 | Worker states | In-memory (`WorkerPool`) | Process lifecycle |
-| Mailbox messages | File system | `.pi/swarm/inboxes/{team}/{agent}.json` |
-| Team definitions | File system | `.pi/swarm/teams/{name}.json` |
+| Mailbox messages | File system | `.pi/aim/teams/{team}/inboxes/{agent}.json` |
+| Team definitions | File system | `.pi/aim/teams/{name}.json` |
 | Agent definitions | File system (read-only) | `~/.pi/agent/agents/*.md`, `.pi/agents/*.md` |
 | Coordinator mode | `pi.appendEntry()` | Session JSONL |
 
 ## Change Log
 
 ### 2026-04-28
-- Initial module skeleton
-- Defined interfaces, file architecture, and dependency graph
+- Implemented all core modules: types, worker-pool, mailbox, agents, render
+- Implemented subagent tool (single/parallel/chain/fork/background modes)
+- Implemented send_message tool (point-to-point + broadcast)
+- Implemented coordinator mode (/coordinator command + prompt injection)
+- Implemented team management (team_create, team_delete, spawnTeammate)
+- Implemented permission bridge (dangerous command detection + confirmation)
+- Implemented inbox poller (continuous polling loop for long-lived agents)
