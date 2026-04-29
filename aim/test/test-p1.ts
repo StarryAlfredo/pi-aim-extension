@@ -46,7 +46,10 @@ function spawnRpcWorker(cwd: string, model?: string): {
 } {
   const args: string[] = ["--mode", "rpc", "--no-session"];
   if (model) args.push("--model", model);
-  const proc = spawn("pi", args, {
+  const piCmd = process.platform === "win32"
+    ? ["cmd", "/c", "D:\\nodeJS\\pi.cmd"]
+    : ["pi"];
+  const proc = spawn(piCmd[0], [...piCmd.slice(1), ...args], {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -419,6 +422,7 @@ async function main() {
 
   const startTime = Date.now();
 
+  // Only run test 1 for debugging
   await test1_agentEndDetection(cwd);
   await test2_steerInterrupt(cwd);
   await test3_followUp(cwd);
