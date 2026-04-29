@@ -165,7 +165,7 @@ async function runSingleAgent(
       tools: params.tools ?? meta.tools,
       cwd: params.cwd ?? cwd,
       background: params.background ?? meta.background,
-      forkFrom: undefined, // resume uses --session, not forkFrom
+      forkFrom: undefined, // resume loads transcript from sidechain file via readTranscript
       systemPrompt: params.systemPrompt,
       rpcMode: true,
       agentId: params.resumeAgentId,
@@ -299,6 +299,27 @@ async function runSingleAgent(
   }
 
   try {
+    // RPC mode: wait for completion signal from stdout, then kill process
+    if (useRpc) {
+      // Wait up to 120s for the worker to respond, polling messages
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        const current = workerPool.getInfo(workerId);
+        // Check if worker has produced assistant messages (indicates completion)
+        if (current && current.messages.some(m => m.role === "assistant" &&
+            m.content.some(p => p.type === "text" && p.text!.trim().length > 0))) {
+          // Give it 2 more seconds for final messages, then kill
+          await new Promise(r => setTimeout(r, 2000));
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      // Kill the RPC process (it won't exit on its own)
+      workerPool.kill(workerId);
+      // Wait for close event to fire
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
     const result = await workerPool.waitFor(workerId);
     const usage = collectUsage(result.messages);
     const finalOutput = getFinalOutput(result.messages);

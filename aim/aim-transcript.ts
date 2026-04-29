@@ -97,9 +97,8 @@ export function recordSubagentResult(pi: ExtensionAPI, data: SubagentResultData)
 // ============================================================================
 
 function ensureDir(filePath: string) {
-  const dir = filePath.substring(0, filePath.lastIndexOf("/") !== -1
-    ? filePath.lastIndexOf("/")
-    : filePath.lastIndexOf("\\"));
+  const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
+  const dir = lastSlash > 0 ? filePath.substring(0, lastSlash) : "";
   if (dir && !fs.existsSync(dir)) {
     try { fs.mkdirSync(dir, { recursive: true }); } catch (e: any) {
       if (e.code !== "EEXIST") throw e;
