@@ -104,7 +104,8 @@ aim/
 ├── poller.ts          ← Inbox poller: blocking while-loop for continuous agent operation
 ├── permissions.ts     ← Permission bridge: intercept dangerous bash commands, request user confirmation
 ├── render.ts          ← TUI rendering: tool call/result components, usage stats formatting
-└── agents.ts          ← Agent definition loader: parse .md frontmatter, discover user/project agents
+├── agents.ts          ← Agent definition loader: parse .md frontmatter, discover user/project agents
+└── test/              ← Test suite (see test/README.md for details)
 ```
 
 ## Dependencies

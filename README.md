@@ -86,14 +86,13 @@ Pi Extension System
     └── Export API:          (none)
 ```
 
-## Development
+### Tests
+
+Tests are located in `aim/test/`. See [`aim/test/README.md`](aim/test/README.md) for details on each test file and what it covers.
 
 ```bash
-# Unit tests (coming soon)
-npm test
-
-# Pi should auto-discover these extensions
-pi --verbose
+# Run the full P1 communication loop test suite
+pi -p "run the test suite in test/test-p1.ts" -e aim/index.ts
 ```
 
 ## License
