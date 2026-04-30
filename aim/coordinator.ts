@@ -59,7 +59,7 @@ verification, you MUST follow this workflow:
 // Single
 { agent: "scout", task: "find auth code" }
 
-// Parallel (up to 8, 4 concurrent — PREFERRED for research)
+// Parallel (up to 4 concurrent — PREFERRED for research)
 { tasks: [{ agent: "A", task: "..." }, { agent: "B", task: "..." }] }
 
 // Chain (sequential, {previous} placeholder)

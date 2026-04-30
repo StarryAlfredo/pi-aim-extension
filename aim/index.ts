@@ -399,7 +399,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Spawn a subagent to handle complex, multi-step tasks autonomously",
     promptGuidelines: [
       "Use subagent for complex, multi-step tasks that benefit from isolated context.",
-      "Run independent subagents in parallel (tasks array) to maximize throughput.",
+      "Run independent subagents in parallel (tasks array) to maximize throughput (max 4 concurrent).",
       "Use fork:true for research tasks — the subagent inherits your context.",
       "Use background:true for long tasks — results arrive via notification.",
       "Use resume:<id> to continue a previous agent — look for agent IDs in prior subagent results.",
