@@ -97,9 +97,9 @@ function spawnWorker(cwd: string, model?: string): {
   waitForEvent(eventType: string, timeoutMs?: number): Promise<Record<string, unknown> | null>;
   stop(): void;
 } {
-  const args: string[] = ["--mode", "rpc", "--no-session", "--no-tools", "--thinking", "off", "--model", model ?? "zai/glm-5.1"];
+  const args: string[] = ["--mode", "rpc", "--no-session", "--no-tools", "--thinking", "off", "--model", model ?? "ksyun/deepseek-v3.2"];
   const piCmd = process.platform === "win32"
-    ? ["cmd", "/c", "C:\\Users\\Administrator\\AppData\\Roaming\\npm\\pi.cmd"]
+    ? ["cmd", "/c", path.join(process.env.APPDATA || "", "npm", "pi.cmd")]
     : ["pi"];
   const proc = spawn(piCmd[0], [...piCmd.slice(1), ...args], {
     cwd, stdio: ["pipe", "pipe", "pipe"],
@@ -122,8 +122,8 @@ function spawnWorker(cwd: string, model?: string): {
         const e = JSON.parse(line) as Record<string, unknown>;
         for (let i = pending.length - 1; i >= 0; i--) {
           if (pending[i].eventType === e.type) {
-            pending.splice(i, 1);
-            pending[i]?.resolve(e);
+            const resolved = pending.splice(i, 1)[0];
+            resolved.resolve(e);
             return;
           }
         }
