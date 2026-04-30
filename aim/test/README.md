@@ -4,6 +4,45 @@ Test suite for the AIM multi-agent orchestration module.
 
 ## Test Files
 
+### test-platform.ts — Platform & ExitCode Regression Tests (NEW)
+
+Tests two critical bugs discovered during Windows multi-agent debugging:
+
+**Bug #1: Windows spawn .cmd → EINVAL (Node.js v24+)**
+- Root cause: Node.js v24 `spawn("pi.cmd", ...)` returns EINVAL on Windows.
+  The old `getPiCommand()` resolved to `pi.cmd` when `argv[1]` was undefined.
+- How previous tests missed it: test-p1.ts, test-p2.ts, test-coordinator.ts ALL
+  used `["cmd", "/c", "pi.cmd"]` instead of calling `worker-pool.ts`'s real
+  `getPiCommand()` function. They bypassed the actual code path.
+- Fix: `worker-pool.ts` getPiCommand() now resolves pi.cmd → node.exe + cli.js
+  on Windows.
+- Lesson: Tests must exercise the REAL production code, not parallel
+  workarounds. When testing subprocess spawning, call the actual library
+  function, not a re-implemented version.
+
+**Bug #2: print mode agent_end sets exitCode before close**
+- Root cause: In print mode, `agent_end` event fires and resolves donePromise
+  before the process `close` event. At that point `info.exitCode` is still
+  undefined. `index.ts` uses `result.exitCode ?? 1` → marks successful runs
+  as ✗ FAILED with exitCode 1.
+- How previous tests missed it: All tests used RPC mode (`--mode rpc`), which
+  handles lifecycle differently. Print mode (`--mode json -p`) was only tested
+  indirectly via coordinator behavioral tests (which don't check exitCode).
+- Fix: `agent_end` handler now sets `info.exitCode = 0` as default success;
+  the `close` handler overwrites with actual exit code.
+- Lesson: Test ALL execution modes. RPC mode and print mode have different
+  lifecycle semantics. A test passing in RPC mode doesn't guarantee print
+  mode works.
+
+| Test | Name | Type | What It Tests |
+|------|------|------|---------------|
+| Test 1 | getPiCommand resolves correctly | No LLM | Fixed getPiCommand returns node.exe+cli.js NOT pi.cmd on Windows |
+| Test 2 | spawn pi subprocess works | LLM | pi subprocess launches via real getPiCommand, produces agent_end |
+| Test 3 | agent_end sets exitCode before close | No LLM | Source verification: exitCode=0 set in agent_end handler |
+| Test 4 | print mode exitCode is correct | LLM | Print mode subprocess returns exitCode 0 (not false 1) |
+| Test 5 | concurrent spawning no crash | LLM | Multiple concurrent spawns all succeed |
+| Test 6 | old spawn logic would fail | No LLM | Verifies direct pi.cmd spawn EINVAL on affected Node.js versions |
+
 ### test-p1.ts — P1 Communication Loop Test Suite
 
 Tests the complete communication cycle introduced in the P1 milestone.
@@ -51,7 +90,10 @@ Self-contained — builds coordinator prompt inline without depending on AIM mod
 ### Covered Features
 
 - **RPC mode** (`--mode rpc`): long-lived worker processes with stdin/stdout JSON protocol
+- **Print mode** (`--mode json -p`): one-shot subprocess execution with agent_end → exitCode lifecycle
+- **getPiCommand() platform resolution**: Windows (node.exe + cli.js) vs Unix (pi binary)
 - **agent_end handling**: completion signal replaces 120s poll/kill hack
+- **agent_end exitCode fix**: sets exitCode=0 before close to prevent false failures
 - **steer / follow_up / abort**: process-level control commands
 - **send_message RPC bridge**: active RPC worker detection for immediate message delivery
 - **task-notification XML format**: structured coordinator result reporting
@@ -61,6 +103,7 @@ Self-contained — builds coordinator prompt inline without depending on AIM mod
   `createPlanApprovalRequest`, `createPlanApprovalResponse`
 - **Shared task system**: `createTask`, `claimTask`, `updateTask`, `listTasks`, `findAvailableTask`
   with blocking dependency resolution
+- **Concurrent subprocess spawning**: multiple parallel spawns without race conditions
 
 ## Real Module Coverage
 
@@ -69,16 +112,22 @@ now directly exercise the production code paths:
 
 | AIM Module | Functions Tested | Test File |
 |------------|-----------------|-----------|
+| `worker-pool.ts` | `getPiCommand()` platform resolution | test-platform.ts (#1, #2, #5, #6) |
+| `worker-pool.ts` | agent_end → exitCode=0 lifecycle | test-platform.ts (#3, #4) |
+| `worker-pool.ts` | `spawn` (print mode), `waitFor`, exitCode detection | test-platform.ts (#2, #4) |
+| `worker-pool.ts` | `spawn` (RPC mode), `waitFor`, `steer`, `kill` | test-p1.ts (all) |
 | `mailbox.ts` | `writeToMailbox`, `readMailbox`, `markMessageAsRead` | test-p1.ts (#4, #5); test-p2.ts (#1, #3, #4, #5) |
 | `mailbox.ts` | `createShutdownRequest`, `isShutdownRequest`, `createShutdownApproval` | test-p2.ts (#4) |
 | `mailbox.ts` | `createPlanApprovalRequest`, `createPlanApprovalResponse` | test-p2.ts (#5) |
 | `shared-tasks.ts` | `createTask`, `claimTask` | test-p2.ts (#2, #6) |
 | `shared-tasks.ts` | `updateTask`, `listTasks` | test-p2.ts (#6) |
-| `worker-pool.ts` | `spawn` (RPC mode), `waitFor`, `steer`, `kill` | test-p1.ts (all) |
 
 ## Running Tests
 
 ```bash
+# Run platform & exitCode regression tests (no external API needed for most tests)
+npx tsx test/test-platform.ts
+
 # Run P1 tests (RPC communication)
 npx tsx test/test-p1.ts
 
@@ -88,7 +137,11 @@ npx tsx test/test-p2.ts
 # Run coordinator tests (behavioral validation)
 npx tsx test/test-coordinator.ts
 
+# Run all tests
+for f in test/test-*.ts; do echo "=== $f ==="; npx tsx "$f" || exit 1; done
+
 # Or via pi
+pi -p "run the test suite in test/test-platform.ts"
 pi -p "run the test suite in test/test-p1.ts"
 ```
 
