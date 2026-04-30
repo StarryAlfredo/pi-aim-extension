@@ -690,6 +690,117 @@ async function test9_coordinatorHandlesFailedAgent(cwd: string) {
 }
 
 // ============================================================================
+// Test 10: coordinator reads full AIM extension source (realistic deep task)
+// ============================================================================
+
+async function test10_e2eReadExtensionSource(cwd: string) {
+  console.log("\n=== Test 10: coordinator reads entire AIM extension source (deep task) ===");
+
+  const agentList = `- **scout** (user): 研究探索 agent，搜索代码库、分析架构、找出关键文件和模式
+- **worker** (user): 通用执行 agent，完成代码阅读、编写、修改、运行命令等任务
+- **reviewer** (user): 代码审查 agent，检查代码质量、找出 bug、提出改进建议`;
+
+  const coordinatorPrompt = buildCoordinatorPrompt(agentList);
+
+  const worker = spawnRpcWorker(cwd);
+  const { proc, send, waitForEvent } = worker;
+
+  try {
+    const task = `Read and summarize all source code files in the AIM extension at
+~/.pi/agent/extensions/aim/. There are 13 source files:
+
+Core infrastructure:
+  - index.ts (extension entry, ~620 lines)
+  - types.ts (shared type definitions, ~280 lines)
+  - worker-pool.ts (process lifecycle, ~230 lines)
+  - agents.ts (agent definition loader, ~100 lines)
+
+Communication & coordination:
+  - mailbox.ts (file-based inbox, ~200 lines)
+  - send-message.ts (LLM-callable message tool, ~100 lines)
+  - coordinator.ts (coordinator mode, ~200 lines)
+  - poller.ts (inbox poller, ~100 lines)
+  - permissions.ts (permission bridge, ~70 lines)
+
+Team & task system:
+  - teams.ts (team management, ~130 lines)
+  - shared-tasks.ts (shared task list, ~150 lines)
+  - aim-transcript.ts (transcript persistence, ~80 lines)
+  - render.ts (TUI rendering, ~170 lines)
+
+For each file report: what it does, key exports, dependencies on other files,
+and any potential issues (bugs, design problems, missing features).`;
+
+    send({
+      type: "prompt",
+      message: coordinatorPrompt + "\n\n---\n\nUSER REQUEST: " + task
+    });
+
+    const result = await waitForEvent("agent_end", 120000);
+    assert(result !== null, "coordinator produced response for deep task", "");
+
+    if (result) {
+      const msgs = result.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+      const text = getAssistantText(msgs);
+
+      log("output", text.slice(0, 300) + (text.length > 300 ? "..." : ""));
+
+      // Must use PARALLEL mode for reading 13 independent files
+      const mentionsParallel =
+        text.toLowerCase().includes("parallel") ||
+        text.toLowerCase().includes("concurrent") ||
+        text.toLowerCase().includes("simultaneous") ||
+        text.toLowerCase().includes("tasks") ;
+
+      assert(mentionsParallel, "coordinator uses parallel mode for multi-file read", text.slice(0, 200));
+
+      // Must reference subagents (not direct reads)
+      const mentionsSubagent =
+        text.toLowerCase().includes("subagent") ||
+        text.toLowerCase().includes("scout") ||
+        text.toLowerCase().includes("worker") ||
+        text.toLowerCase().includes("agent") ||
+        text.toLowerCase().includes("delegate") ||
+        text.toLowerCase().includes("spawn");
+
+      assert(mentionsSubagent, "coordinator delegates to subagents, not reading directly", text.slice(0, 200));
+
+      // Should reference at least 5 different files in the plan
+      // (shows it actually understood the scope, not just generic delegation)
+      const referencedFiles = [
+        text.includes("index.ts"),
+        text.includes("types.ts"),
+        text.includes("worker-pool"),
+        text.includes("mailbox"),
+        text.includes("coordinator"),
+        text.includes("shared-tasks"),
+        text.includes("teams"),
+        text.includes("poller"),
+        text.includes("permissions"),
+        text.includes("send-message"),
+        text.includes("aim-transcript"),
+        text.includes("render"),
+        text.includes("agents"),
+      ];
+      const fileRefCount = referencedFiles.filter(Boolean).length;
+      assert(fileRefCount >= 5, "coordinator references at least 5 specific files", `referenced ${fileRefCount} files`);
+
+      // Must NOT say it will read files one by one itself
+      const saysSequential =
+        (text.toLowerCase().includes("read ") && text.toLowerCase().includes("then read")) ||
+        text.toLowerCase().includes("one at a time") ||
+        text.toLowerCase().includes("one by one");
+
+      assert(!saysSequential, "coordinator does NOT propose sequential reading", text.slice(0, 200));
+
+      log("scope", `coordinator plan covers ${fileRefCount} of 13 files`);
+    }
+  } finally {
+    try { proc.kill(); } catch {}
+  }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -698,7 +809,7 @@ async function main() {
   console.log("AIM Coordinator Mode — Integration Test Suite");
   console.log(`CWD: ${cwd}`);
   console.log("===============================================");
-  console.log("Note: Tests 2-4, 6, 8, 9 require active LLM API access (ksyun/deepseek-v3.2)\n");
+  console.log("Note: Tests 2-4, 6, 8, 9, 10 require active LLM API access (ksyun/deepseek-v3.2)\n");
 
   const startTime = Date.now();
 
@@ -714,6 +825,7 @@ async function main() {
   await test6_emptyAgentList(cwd);
   await test8_coordinatorRetriesOnTruncated(cwd);
   await test9_coordinatorHandlesFailedAgent(cwd);
+  await test10_e2eReadExtensionSource(cwd);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
