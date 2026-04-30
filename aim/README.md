@@ -106,7 +106,12 @@ aim/
 ├── render.ts          ← TUI rendering: tool call/result components, usage stats formatting
 ├── agents.ts          ← Agent definition loader: parse .md frontmatter, discover user/project agents
 ├── shared-tasks.ts    ← Team shared task system: file-based CRUD, claim/unclaim, lock-safe
-└── test/              ← Test suite (see test/README.md for details)
+├── test/
+│   ├── README.md
+│   ├── test-p1.ts         ← P1: RPC communication loop tests
+│   ├── test-p2.ts         ← P2: teammate autonomy + peer communication
+│   └── test-coordinator.ts ← Coordinator mode behavioral tests
+└── ...
 ```
 
 ## Dependencies
@@ -128,6 +133,19 @@ aim/
 ## Change Log
 
 ### 2026-04-30
+- **Feature: coordinator mode overhaul** — Rewritten coordinator prompt for effectiveness:
+  - Prompt now injected at the BEGINNING of system prompt (not end) to avoid "lost-in-middle"
+  - Uses strong MUST/NEVER/ALWAYS directives for enforceable delegation
+  - Dynamically injects available agent list so LLM knows what subagents to use
+  - Includes CORRECT/WRONG examples, structured workflow, synthesis instructions
+  - New `buildCoordinatorPrompt()` function and `refreshAgentList()` utility
+- **Feature: coordinator test suite** — New `test/test-coordinator.ts` with 6 tests:
+  - Prompt structure validation (20+ required elements)
+  - Behavioral test: coordinator delegates vs doing work directly
+  - Behavioral test: coordinator uses parallel mode for independent tasks
+  - Comparison test: baseline vs coordinator produces different outputs
+  - Prompt position test: validates coordinator at beginning, not end
+  - Edge case: coordinator with empty agent list still functions
 - **Fix: test determinism** — P1 tests now use `--no-tools --thinking off` for RPC workers
   to prevent non-deterministic tool-use responses. P1 test4 now uses real AIM modules
   (`writeToMailbox`, `readMailbox`, `markMessageAsRead`) from `mailbox.ts`.

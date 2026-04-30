@@ -5,9 +5,16 @@
  * In coordinator mode, the system prompt is replaced with instructions
  * that guide the agent to delegate work to subagents rather than doing
  * everything itself.
+ *
+ * Key design decisions:
+ * - Coordinator prompt is injected at the BEGINNING of the system prompt
+ *   (not the end) to avoid the "lost-in-middle" problem in long contexts.
+ * - Available agents are dynamically injected so the LLM knows what to call.
+ * - Uses strong MUST/ALWAYS language to enforce delegation behavior.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { discoverAgents } from "./agents.js";
 
 // ============================================================================
 // Constants
@@ -15,56 +22,75 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 
 const COORDINATOR_ENTRY_TYPE = "aim-coordinator-mode";
 
-const COORDINATOR_SYSTEM_PROMPT_ADDENDUM = `
+/** Build the coordinator system prompt with dynamic agent list.
+ *  Kept as a function rather than a constant so we can inject available agents. */
+function buildCoordinatorPrompt(agentList: string): string {
+  return `## Coordinator Mode — ACTIVE (Highest Priority)
 
-## Coordinator Mode — Active
+You are a COORDINATOR operating in multi-agent mode. Your PRIMARY responsibility
+is to ORCHESTRATE work across subagents using the **subagent** tool. You MUST
+delegate, not do the work yourself.
 
-You are now operating as a **coordinator**. Your role is to orchestrate
-software engineering tasks across multiple workers, not to do everything
-yourself.
+### Available Agents
 
-### Your Tools for Coordination
+${agentList}
 
-- **subagent** — Spawn a new worker. Use for research, implementation, verification.
-  Supports: single, parallel, chain, fork, background, resume.
-- **send_message** — Continue an existing worker with a follow-up message.
+### Mandatory Workflow — FOLLOW STRICTLY
 
-### Workflow
+For any task that requires file reading, code exploration, implementation, or
+verification, you MUST follow this workflow:
 
-1. **Research** → Workers (parallel). Assign independent questions to separate workers.
-2. **Synthesis** → You. Read findings, understand the problem, craft implementation specs.
-3. **Implementation** → Workers. Make targeted changes per spec.
-4. **Verification** → Workers. Test changes work.
+1. **Research** → ALWAYS use parallel subagents. Split independent questions
+   across agents. Example: for "find auth bugs", launch scout to search files.
+2. **Synthesis** → After workers return results, YOU synthesize findings.
+   NEVER write code before workers have reported back.
+3. **Implementation** → Delegate to workers with SPECIFIC instructions
+   (exact file paths, line numbers, what to change).
+4. **Verification** → Delegate to a worker to confirm changes work.
 
-### Worker Results
+### Subagent Tool Reference
 
-Worker results arrive as user messages containing "<task-notification>" XML.
-Format:
+\`\`\`typescript
+// Single
+{ agent: "scout", task: "find auth code" }
 
-    <task-notification>
-    <task-id>agentId</task-id>
-    <status>completed|failed</status>
-    <summary>one-line summary</summary>
-    <result>agent output</result>
-    <usage>
-      <total_tokens>N</total_tokens>
-      <tool_uses>N</tool_uses>
-    </usage>
-    </task-notification>
+// Parallel (up to 8, 4 concurrent — PREFERRED for research)
+{ tasks: [{ agent: "A", task: "..." }, { agent: "B", task: "..." }] }
 
-These are worker results — do NOT respond to them as if the user is speaking.
-Synthesize the information and report to the user.
+// Chain (sequential, {previous} placeholder)
+{ chain: [{ agent: "scout", task: "..." }, { agent: "fixer", task: "fix {previous}" }] }
+\`\`\`
 
-### Rules
+### Rules — YOU MUST OBEY ALL
 
-- Launch independent workers **concurrently** whenever possible.
-- Do NOT use one worker to check on another. Workers notify you when done.
-- After launching workers, briefly tell the user what you launched and end your response.
-- **Never fabricate or predict worker results** — results arrive as separate messages.
-- When workers report findings, **synthesize** them before directing follow-up work.
-  Include specific file paths, line numbers, and exactly what to change.
-  Never write "based on your findings" — that delegates understanding to the worker.
-`;
+1. **NEVER** perform file reads, code edits, or bash commands directly.
+   Always delegate to subagents.
+2. **ALWAYS** launch independent research tasks in PARALLEL (tasks array).
+3. **NEVER** write a response that does implementation work yourself.
+   If you need to read a file, use a subagent.
+4. After launching workers, state what you launched and END your response.
+5. **NEVER** predict or fabricate worker results.
+6. When workers report, SYNTHESIZE findings before the next step.
+7. Include specific file paths and exact instructions in worker tasks.
+
+### Example
+
+User: "find and fix auth bugs in the project"
+
+CORRECT (coordinator response):
+"I'll research auth bugs by launching parallel scouts.
+<use subagent with tasks array to research auth files>"
+
+WRONG:
+"I'll read the files myself..." (❌ you are a coordinator, delegate!)
+
+### Task Completion
+
+When all tasks are done, synthesize a final report for the user including:
+- What was found
+- What was changed (with file paths)
+- Any verification results`;
+}
 
 // ============================================================================
 // Module State
@@ -98,6 +124,21 @@ export function restoreCoordinatorState(ctx: ExtensionContext) {
 }
 
 // ============================================================================
+// Agent List Cache
+// ============================================================================
+
+let cachedAgentList: string | null = null;
+
+/** Refresh the cached agent list for coordinator prompt injection */
+export function refreshAgentList(cwd: string) {
+  const { agents } = discoverAgents(cwd, "both");
+  cachedAgentList = agents
+    .map(a => `- **${a.name}** (${a.source}): ${a.description}`)
+    .join("\n") || "- (no agents configured)";
+  return cachedAgentList;
+}
+
+// ============================================================================
 // Registration
 // ============================================================================
 
@@ -107,6 +148,11 @@ export function registerCoordinator(pi: ExtensionAPI) {
     description: "Toggle coordinator mode (orchestrate work across multiple agents)",
     handler: async (_args, ctx) => {
       const nowActive = toggleCoordinator();
+
+      // Refresh agent list when toggling ON
+      if (nowActive) {
+        refreshAgentList(ctx.cwd);
+      }
 
       // Persist to session
       pi.appendEntry(COORDINATOR_ENTRY_TYPE, { active: nowActive });
@@ -120,16 +166,25 @@ export function registerCoordinator(pi: ExtensionAPI) {
     },
   });
 
-  // Event: inject coordinator prompt when mode is active
+  // Event: inject coordinator prompt BEFORE the normal system prompt (not after)
+  // This avoids lost-in-the-middle in long contexts
   pi.on("before_agent_start", async (event, _ctx) => {
     if (!coordinatorActive) return;
+
+    const agentList = cachedAgentList ?? "(no agents available)";
+    const coordinatorPrompt = buildCoordinatorPrompt(agentList);
+
+    // Inject at the BEGINNING so it's not lost in long contexts
     return {
-      systemPrompt: event.systemPrompt + COORDINATOR_SYSTEM_PROMPT_ADDENDUM,
+      systemPrompt: coordinatorPrompt + "\n\n" + event.systemPrompt,
     };
   });
 
   // Event: restore coordinator state on session start
   pi.on("session_start", async (_event, ctx) => {
     restoreCoordinatorState(ctx);
+    if (coordinatorActive) {
+      refreshAgentList(ctx.cwd);
+    }
   });
 }

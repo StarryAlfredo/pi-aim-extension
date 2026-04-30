@@ -34,6 +34,20 @@ All tests use real AIM modules (`mailbox.ts`, `shared-tasks.ts`) — no raw file
 | Test 5 | Plan approval | `createPlanApprovalRequest` → leader approves/rejects via `createPlanApprovalResponse` |
 | Test 6 | E2E two-worker task list | Two workers coordinate on shared task list with `createTask`, `claimTask`, `updateTask`, `listTasks` |
 
+### test-coordinator.ts — Coordinator Mode Behavioral Tests
+
+Tests that coordinator mode changes agent behavior (delegation, parallel execution, etc.).
+Self-contained — builds coordinator prompt inline without depending on AIM module imports.
+
+| Test | Name | Type | What It Tests |
+|------|------|------|---------------|
+| Test 1 | Prompt structure validation | No LLM | Coordinator prompt has 20+ required structural elements (MUST, NEVER, Workflow, Examples, etc.) |
+| Test 2 | Coordinator delegates | LLM | Coordinator mentions delegation (subagent/scout) instead of doing work directly |
+| Test 3 | Parallel for independent tasks | LLM | Coordinator uses parallel/concurrent for two independent research questions |
+| Test 4 | Baseline vs coordinator | LLM | Non-coordinator and coordinator produce DIFFERENT outputs for the same task |
+| Test 5 | Prompt position | No LLM | Coordinator prompt is at the BEGINNING (avoids lost-in-middle) |
+| Test 6 | Empty agent list | LLM | Coordinator with no agents configured still mentions delegation concept |
+
 ### Covered Features
 
 - **RPC mode** (`--mode rpc`): long-lived worker processes with stdin/stdout JSON protocol
@@ -65,11 +79,14 @@ now directly exercise the production code paths:
 ## Running Tests
 
 ```bash
-# Run P1 tests
+# Run P1 tests (RPC communication)
 npx tsx test/test-p1.ts
 
-# Run P2 tests
+# Run P2 tests (teammate autonomy + peer messaging)
 npx tsx test/test-p2.ts
+
+# Run coordinator tests (behavioral validation)
+npx tsx test/test-coordinator.ts
 
 # Or via pi
 pi -p "run the test suite in test/test-p1.ts"
@@ -77,7 +94,8 @@ pi -p "run the test suite in test/test-p1.ts"
 
 Tests spawn real `pi` processes in RPC mode with `--no-tools --thinking off`
 for deterministic text-only responses, and verify end-to-end communication
-through real AIM modules. Each test spawns its own worker and kills it on completion.
+through real AIM modules (test-p1, test-p2) or prompt-level behavioral validation
+(test-coordinator). Each test spawns its own worker and kills it on completion.
 
 ## Adding New Tests
 
