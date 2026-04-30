@@ -801,6 +801,85 @@ and any potential issues (bugs, design problems, missing features).`;
 }
 
 // ============================================================================
+// Test 11: coordinator receives tool info for agents (no LLM)
+// ============================================================================
+
+async function test11_agentToolInfoInPrompt() {
+  console.log("\n=== Test 11: coordinator prompt includes agent tool capabilities ===");
+
+  const agentList = `- **scout** (user): Reads and searches code files. Tools: read, bash, ls
+- **worker** (user): Makes code changes and edits. Tools: read, write, edit, bash
+- **reviewer** (user): Reviews code for best practices. Tools: read, bash`;
+  const prompt = buildCoordinatorPrompt(agentList);
+
+  const hasToolsForScout = prompt.includes("read, bash, ls");
+  const hasToolsForWorker = prompt.includes("read, write, edit, bash");
+  const hasToolsForReviewer = prompt.includes("read, bash");
+
+  assert(hasToolsForScout, "scout tools listed in prompt", "");
+  assert(hasToolsForWorker, "worker tools listed in prompt", "");
+  assert(hasToolsForReviewer, "reviewer tools listed in prompt", "");
+
+  log("tools", "all agent tools are visible to coordinator");
+}
+
+// ============================================================================
+// Test 12: coordinator sends subagent to read real source files (behavioral)
+// ============================================================================
+
+async function test12_coordinatorReadsClaudeCodeSource(cwd: string) {
+  console.log("\n=== Test 12: coordinator delegates reading real source files ===");
+
+  const agentList = `- **scout** (user): Reads and searches code files. Tools: read, bash, ls
+- **worker** (user): Makes code changes. Tools: read, write, edit, bash`;
+  const coordinatorPrompt = buildCoordinatorPrompt(agentList);
+
+  const worker = spawnRpcWorker(cwd);
+  const { proc, send, waitForEvent } = worker;
+
+  try {
+    // Use a real, existing file on disk
+    const task = `Read and summarize this file using a scout subagent:
+G:\\claudecode\\claude-code-analysis-main\\src\\coordinator\\coordinatorMode.ts
+
+Report: what the file does, key exports, and notable design decisions.
+
+IMPORTANT: Call subagent({agent:"scout", task:"..."}) to actually read the file.
+Do NOT fabricate content. The scout has read tool access.`;
+
+    send({
+      type: "prompt",
+      message: coordinatorPrompt + "\n\n---\n\nUSER REQUEST: " + task
+    });
+
+    const result = await waitForEvent("agent_end", 120000);
+    assert(result !== null, "coordinator completed delegation", "");
+
+    if (result) {
+      const msgs = result.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+      const text = getAssistantText(msgs);
+
+      log("output", text.slice(0, 400));
+
+      const hasRealContent =
+        text.toLowerCase().includes("coordinator") &&
+        (text.toLowerCase().includes("export") || text.toLowerCase().includes("function"));
+      assert(hasRealContent, "output contains real file content", `preview: ${text.slice(0, 200)}`);
+      assert(text.length > 200, "output is substantial (>200 chars)", `length: ${text.length}`);
+
+      const hasHallucination =
+        text.includes("I simulated") ||
+        text.includes("I will create") ||
+        text.includes("hypothetical") ||
+        (text.includes("Error") && text.length < 200);
+      assert(!hasHallucination, "output is not a hallucination or brief error", text.slice(0, 200));
+    }
+  } finally {
+    try { proc.kill(); } catch {}
+  }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -809,7 +888,7 @@ async function main() {
   console.log("AIM Coordinator Mode — Integration Test Suite");
   console.log(`CWD: ${cwd}`);
   console.log("===============================================");
-  console.log("Note: Tests 2-4, 6, 8, 9, 10 require active LLM API access (ksyun/deepseek-v3.2)\n");
+  console.log("Note: Tests 2-4, 6, 8, 9, 10, 12 require active LLM API access (ksyun/deepseek-v3.2)\n");
 
   const startTime = Date.now();
 
@@ -817,6 +896,7 @@ async function main() {
   await test1_promptStructure();
   await test5_promptPosition();
   await test7_truncatedResultRecoveryPrompt();
+  await test11_agentToolInfoInPrompt();
 
   // LLM tests: behavioral validation
   await test2_coordinatorDelegates(cwd);
@@ -826,6 +906,7 @@ async function main() {
   await test8_coordinatorRetriesOnTruncated(cwd);
   await test9_coordinatorHandlesFailedAgent(cwd);
   await test10_e2eReadExtensionSource(cwd);
+  await test12_coordinatorReadsClaudeCodeSource(cwd);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
