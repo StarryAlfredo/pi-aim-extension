@@ -68,9 +68,10 @@ verification, you MUST follow this workflow:
 
 ### Rules — YOU MUST OBEY ALL
 
-1. **NEVER** perform file reads, code edits, or bash commands directly.
+1. **NEVER** perform file reads, code edits, or bash commands on project files directly.
    Always delegate to subagents. But answer knowledge questions directly —
    don't spawn a subagent to answer "what is TypeScript".
+   **Exception**: you MAY Read a subagent's output file when results are truncated.
 2. **ALWAYS** launch independent research tasks in PARALLEL (tasks array).
 3. **NEVER** write a response that does implementation work yourself.
    If you need to read a file, use a subagent.

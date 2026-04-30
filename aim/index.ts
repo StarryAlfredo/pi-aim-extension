@@ -488,16 +488,31 @@ export default function (pi: ExtensionAPI) {
           runSingleAgent(pi, cwd, agents, { agent: t.agent, task: t.task, cwd: t.cwd, model: t.model, tools: t.tools }, signal, (up) => onUpdate?.({ content: [{ type: "text", text: `[parallel] ${up.agent}: ${up.status}` }], details: { mode: "parallel", ...up } }))
         );
         const ok = results.filter(r => r.exitCode === 0).length;
+
+        // Write truncated outputs to disk so coordinator can Read them
+        import("node:fs").then(fs => {
+          import("node:path").then(path => {
+            for (const r of results) {
+              const full = getFinalOutput(r.messages);
+              if (full.length > 500 && r.agentId) {
+                const dir = path.join(cwd, ".pi", "aim", "task-outputs");
+                try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+                fs.writeFileSync(path.join(dir, `${r.agentId}-output.txt`), full, "utf-8");
+              }
+            }
+          });
+        });
+
         const lines = results.map(r => {
           const fullOutput = getFinalOutput(r.messages);
           const maxLen = 500;
           const truncated = fullOutput.length > maxLen;
-          const display = truncated ? fullOutput.slice(0, maxLen) + `\n... (truncated, ${fullOutput.length} chars total. Use single subagent with same task to get full output)` : (fullOutput || "(no output)");
+          const display = truncated ? fullOutput.slice(0, maxLen) + `\n... (truncated, ${fullOutput.length} chars total. Full output: .pi/aim/task-outputs/${r.agentId || 'unknown'}-output.txt)` : (fullOutput || "(no output)");
           const statusIcon = r.exitCode === 0 ? "✓" : "✗";
-          const errorHint = r.exitCode !== 0 ? `\n⚠️ This agent FAILED. You MUST retry or use a different approach. Do NOT read files yourself.` : "";
+          const errorHint = r.exitCode !== 0 ? `\n⚠️ This agent FAILED. Retry with corrected parameters. Do NOT work around it by reading project files yourself.` : "";
           return `[${r.agent}] ${statusIcon}: ${display}${errorHint}`;
         });
-        return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} OK\n\n${lines.join("\n\n")}\n\n⚠️ IMPORTANT: If any agent shows "FAILED" or "truncated", you MUST retry with a single subagent. Never read files yourself.` }], details: { mode: "parallel", results } };
+        return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} OK\n\n${lines.join("\n\n")}\n\n⚠️ Truncated: read the output file shown. Failed: retry with a single subagent.` }], details: { mode: "parallel", results } };
       }
 
       // --- Single ---
