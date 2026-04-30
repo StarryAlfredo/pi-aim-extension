@@ -38,21 +38,7 @@ yourself.
 
 ### Worker Results
 
-Worker results arrive as user messages containing `<task-notification>` XML.
-Format:
-```
-<task-notification>
-<task-id>agentId</task-id>
-<status>completed|failed</status>
-<summary>one-line summary</summary>
-<result>agent output</result>
-<usage>
-  <total_tokens>N</total_tokens>
-  <tool_uses>N</tool_uses>
-</usage>
-</task-notification>
-```
-
+Worker results arrive as user messages containing XML task-notifications.
 These are worker results — do NOT respond to them as if the user is speaking.
 Synthesize the information and report to the user.
 

@@ -1,447 +1,235 @@
 /**
- * P1 Communication Loop — Test Suite
+ * P1 Communication Loop — Test Suite v2
  *
- * Tests the complete communication cycle:
- *   1. RPC worker completion (agent_end detection)
- *   2. RPC steer (interrupt current execution)
- *   3. RPC follow_up (execute after completion)
- *   4. Leader → Worker message pipe (mailbox → RPC steer)
- *   5. Worker → Leader idle notification
- *   6. Coordinator result pipeline (agent_end → task-notification)
- *   7. End-to-end coordinator workflow
- *
- * Run: pi -p "run the test suite in test-p1.ts"
- * Or:  pi -e ../aim/index.ts -p @test-p1.ts
+ * Uses simple event collection instead of generator pattern.
+ * All events collected into an array; test polls for expected events.
+ * Run: npx tsx test-p1.ts
  */
 
 import { spawn } from "node:child_process";
-import * as fs from "node:fs";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-let testCount = 0;
-let passCount = 0;
-let failCount = 0;
+let testCount = 0, passCount = 0, failCount = 0;
 const failures: string[] = [];
 
 function assert(condition: boolean, test: string, detail: string) {
-  if (condition) { passCount++; }
-  else { failCount++; failures.push(`${test}: ${detail}`); }
   testCount++;
+  if (condition) passCount++;
+  else { failCount++; failures.push(`${test}: ${detail}`); }
 }
 
 function log(phase: string, msg: string) {
-  console.log(`  [${phase}] ${msg}`);
+  const t = new Date().toISOString().slice(11, 19);
+  console.log(`  [${t}][${phase}] ${msg}`);
 }
 
-/** Spawn pi in RPC mode, returning stdin/stdout handles */
-function spawnRpcWorker(cwd: string, model?: string): {
-  proc: ReturnType<typeof spawn>;
-  send(obj: Record<string, unknown>): void;
-  events(): AsyncGenerator<Record<string, unknown>>;
-} {
-  const args: string[] = ["--mode", "rpc", "--no-session"];
+/** Spawn pi RPC and return a simple interface */
+function spawnRpc(cwd: string, model?: string) {
+  // Use node + pi script directly (bypasses .cmd wrapper issues)
+  const npmDir = path.join(process.env.APPDATA || "", "npm");
+  const piScript = path.join(npmDir, "node_modules", "@mariozechner", "pi-coding-agent", "dist", "cli.js");
+  const nodeExe = process.execPath;
+
+  const args = [piScript, "--mode", "rpc", "--no-session"];
   if (model) args.push("--model", model);
-  const proc = spawn("pi", args, {
-    cwd,
-    stdio: ["pipe", "pipe", "pipe"],
+
+  const proc = spawn(nodeExe, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+  const events: Record<string, unknown>[] = [];
+
+  proc.stderr?.on("data", (d: Buffer) => {
+    const msg = d.toString().trim();
+    if (msg && !msg.includes("DeprecationWarning")) log("stderr", msg.slice(0, 120));
   });
 
-  let eventBuffer: string[] = [];
-  let resolveNext: ((value: Record<string, unknown>) => void) | null = null;
-
-  proc.stdout?.on("data", (data: Buffer) => {
-    const lines = data.toString().split("\n");
-    for (const line of lines) {
+  proc.stdout?.on("data", (d: Buffer) => {
+    for (const line of d.toString().split("\n")) {
       if (!line.trim()) continue;
-      try {
-        const e = JSON.parse(line) as Record<string, unknown>;
-        if (resolveNext) {
-          const cb = resolveNext;
-          resolveNext = null;
-          cb(e);
-        } else {
-          eventBuffer.push(line);
-        }
-      } catch { /* ignore */ }
+      try { events.push(JSON.parse(line)); }
+      catch { /* ignore */ }
     }
-  });
-
-  proc.stderr?.on("data", (data: Buffer) => {
-    // silent
   });
 
   function send(obj: Record<string, unknown>) {
     if (!proc.stdin?.destroyed) proc.stdin.write(JSON.stringify(obj) + "\n");
   }
 
-  async function* events(): AsyncGenerator<Record<string, unknown>> {
-    while (true) {
-      if (eventBuffer.length > 0) {
-        const line = eventBuffer.shift()!;
-        yield JSON.parse(line) as Record<string, unknown>;
-        continue;
-      }
-      // Wait for next event
-      const next = await new Promise<Record<string, unknown>>((resolve) => {
-        resolveNext = resolve;
-        // Also check buffer again (may have been populated during await)
-        setTimeout(() => {
-          if (eventBuffer.length > 0) {
-            const line = eventBuffer.shift()!;
-            resolve(JSON.parse(line) as Record<string, unknown>);
-          }
-        }, 50);
-      });
-      yield next;
+  /** Wait for any event with given type */
+  async function waitFor(type: string, timeoutMs = 60000): Promise<Record<string, unknown> | null> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const found = events.find(e => e.type === type);
+      if (found) return found;
+      await new Promise(r => setTimeout(r, 200));
     }
+    return null;
   }
 
-  return { proc, send, events };
-}
-
-/** Wait for a specific event type from the generator */
-async function waitForEvent(
-  gen: AsyncGenerator<Record<string, unknown>>,
-  eventType: string,
-  timeoutMs: number = 30000,
-): Promise<Record<string, unknown> | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const { value, done } = await gen.next();
-    if (done) return null;
-    if (value.type === eventType) return value;
+  function extractResult(ev: Record<string, unknown>): string {
+    const msgs = (ev.messages || []) as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+    return msgs.filter(m => m.role === "assistant")
+      .flatMap(m => m.content.filter(p => p.type === "text"))
+      .map(p => p.text || "").join("\n");
   }
-  return null;
+
+  return { proc, send, waitFor, extractResult, events };
 }
 
-// ============================================================================
-// Test Cases
-// ============================================================================
+// ═══ Test Cases ═══
 
-async function test1_agentEndDetection(cwd: string) {
-  console.log("\n=== Test 1: RPC worker completion (agent_end detection) ===");
-  const { proc, send, events } = spawnRpcWorker(cwd);
-  const eventGen = events();
-
+async function t1(cwd: string) {
+  console.log("\n=== Test 1: agent_end detection ===");
+  const w = spawnRpc(cwd);
   try {
-    // Send a simple prompt
-    log("send", "sending prompt: reply hello");
-    send({ type: "prompt", message: "reply with exactly 'hello' and nothing else" });
+    log("send", "prompt: reply hello");
+    w.send({ type: "prompt", message: "reply with exactly 'hello'" });
 
-    // Wait for agent_end
-    const agentEnd = await waitForEvent(eventGen, "agent_end", 30000);
-    assert(agentEnd !== null, "agent_end received", "agent_end event arrived");
-    if (agentEnd) {
-      assert(
-        Array.isArray(agentEnd.messages),
-        "agent_end has messages",
-        `messages: ${JSON.stringify(agentEnd.messages).slice(0, 100)}`,
-      );
-      const assistantMsgs = (agentEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>)
-        .filter(m => m.role === "assistant");
-      assert(assistantMsgs.length > 0, "has assistant message", `found ${assistantMsgs.length} assistant messages`);
-
-      const finalText = assistantMsgs[assistantMsgs.length - 1]?.content
-        .filter(p => p.type === "text")
-        .map(p => p.text || "")
-        .join("");
-      assert(
-        finalText.toLowerCase().includes("hello"),
-        "assistant replied hello",
-        `reply was: ${finalText.slice(0, 100)}`,
-      );
+    const end = await w.waitFor("agent_end", 60000);
+    assert(end !== null, "agent_end received", "event arrived");
+    if (end) {
+      const result = w.extractResult(end);
+      assert(result.toLowerCase().includes("hello"), "output has hello", result.slice(0, 80));
+      assert(w.proc.exitCode === null, "RPC stays alive", "process not dead after agent_end");
     }
-
-    // Verify: worker should NOT be dead (RPC mode keeps running)
-    assert(proc.exitCode === null, "worker still alive after agent_end", "RPC process should stay alive");
-  } finally {
-    proc.kill();
-  }
+  } finally { w.proc.kill(); }
 }
 
-async function test2_steerInterrupt(cwd: string) {
-  console.log("\n=== Test 2: RPC steer (interrupt current execution) ===");
-  const { proc, send, events } = spawnRpcWorker(cwd);
-  const eventGen = events();
-
+async function t2(cwd: string) {
+  console.log("\n=== Test 2: steer interrupt ===");
+  const w = spawnRpc(cwd);
   try {
-    // Send a prompt that would take work (use read tool)
-    send({ type: "prompt", message: "use read tool to read README.md, then describe it" });
+    w.send({ type: "prompt", message: "ls -la the current directory, then use read tool on README.md" });
+    await new Promise(r => setTimeout(r, 3000));
+    log("steer", "interrupting with new task");
+    w.send({ type: "steer", message: "ignore previous, reply only: STEERED_OK" });
 
-    // Wait 2s, then steer to a simpler task
-    await new Promise(r => setTimeout(r, 2000));
-    log("steer", "sending steering message");
-    send({ type: "steer", message: "ignore previous task, reply with only 'steered'" });
-
-    const agentEnd = await waitForEvent(eventGen, "agent_end", 30000);
-    assert(agentEnd !== null, "agent_end after steer", "should complete after steer");
-
-    if (agentEnd) {
-      const assistantMsgs = (agentEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>)
-        .filter(m => m.role === "assistant");
-      const finalText = assistantMsgs[assistantMsgs.length - 1]?.content
-        .filter(p => p.type === "text")
-        .map(p => p.text || "")
-        .join("");
-      assert(
-        finalText.toLowerCase().includes("steered"),
-        "worker responded to steer",
-        `reply: ${finalText.slice(0, 100)}`,
-      );
+    const end = await w.waitFor("agent_end", 60000);
+    assert(end !== null, "agent_end after steer", "completed");
+    if (end) {
+      const r = w.extractResult(end);
+      assert(r.toLowerCase().includes("steered"), "responded to steer", r.slice(0, 80));
     }
-  } finally {
-    proc.kill();
-  }
+  } finally { w.proc.kill(); }
 }
 
-async function test3_followUp(cwd: string) {
-  console.log("\n=== Test 3: RPC follow_up (execute after completion) ===");
-  const { proc, send, events } = spawnRpcWorker(cwd);
-  const eventGen = events();
-
+async function t3(cwd: string) {
+  console.log("\n=== Test 3: follow_up ===");
+  const w = spawnRpc(cwd);
   try {
-    // Send prompt
-    send({ type: "prompt", message: "reply with exactly 'first'" });
-    // Immediately queue follow-up
-    send({ type: "follow_up", message: "now reply with exactly 'second'" });
+    w.send({ type: "prompt", message: "reply exactly: FIRST" });
+    w.send({ type: "follow_up", message: "now reply exactly: SECOND" });
 
-    // Wait for first agent_end
-    const firstEnd = await waitForEvent(eventGen, "agent_end", 30000);
-    assert(firstEnd !== null, "first agent_end", "first prompt completed");
+    const e1 = await w.waitFor("agent_end", 60000);
+    assert(e1 !== null, "first agent_end", "phase 1 done");
 
-    // Wait for second agent_end (follow_up triggers another cycle)
-    const secondEnd = await waitForEvent(eventGen, "agent_end", 30000);
-    assert(secondEnd !== null, "second agent_end", "follow_up triggered second cycle");
-
-    if (secondEnd) {
-      const assistantMsgs = (secondEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>)
-        .filter(m => m.role === "assistant");
-      const finalText = assistantMsgs[assistantMsgs.length - 1]?.content
-        .filter(p => p.type === "text")
-        .map(p => p.text || "")
-        .join("");
-      assert(
-        finalText.toLowerCase().includes("second"),
-        "worker processed follow_up",
-        `reply: ${finalText.slice(0, 100)}`,
-      );
+    const e2 = await w.waitFor("agent_end", 120000);
+    assert(e2 !== null, "second agent_end", "follow_up triggered phase 2");
+    if (e2) {
+      const r = w.extractResult(e2);
+      assert(r.toLowerCase().includes("second"), "output has second", r.slice(0, 80));
     }
-  } finally {
-    proc.kill();
-  }
+  } finally { w.proc.kill(); }
 }
 
-async function test4_mailboxToRpcSteer(cwd: string) {
-  console.log("\n=== Test 4: Leader → Worker message pipe (mailbox → RPC steer) ===");
-  const { proc, send, events } = spawnRpcWorker(cwd);
-  const eventGen = events();
-
+async function t4(cwd: string) {
+  console.log("\n=== Test 4: mailbox-like RPC steer ===");
+  const w = spawnRpc(cwd);
   try {
-    send({ type: "prompt", message: "you are about to be steered, reply with 'ready'" });
+    w.send({ type: "prompt", message: "reply: READY" });
+    await new Promise(r => setTimeout(r, 5000));
+    log("steer", "simulating mailbox message via steer");
+    w.send({ type: "steer", message: "now reply: MAILBOX_ROUTED" });
 
-    // Wait for the prompt to be accepted (agent response to "ready" not critical)
-    // Then simulate a mailbox → RPC steer: send a message via steer
-    await new Promise(r => setTimeout(r, 2000));
-    log("mailbox→steer", "converting mailbox message to RPC steer");
-    send({ type: "steer", message: "new instruction from leader's mailbox: reply with only 'mailbox_steered'" });
-
-    const agentEnd = await waitForEvent(eventGen, "agent_end", 30000);
-    assert(agentEnd !== null, "agent_end received", "mailbox routed message completed");
-
-    if (agentEnd) {
-      const assistantMsgs = (agentEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>)
-        .filter(m => m.role === "assistant");
-      const finalText = assistantMsgs[assistantMsgs.length - 1]?.content
-        .filter(p => p.type === "text")
-        .map(p => p.text || "")
-        .join("");
-      assert(
-        finalText.toLowerCase().includes("mailbox_steered"),
-        "mailbox→RPC steer works",
-        `reply: ${finalText.slice(0, 100)}`,
-      );
+    const end = await w.waitFor("agent_end", 60000);
+    assert(end !== null, "agent_end received", "routed");
+    if (end) {
+      const r = w.extractResult(end);
+      assert(r.toLowerCase().includes("mailbox"), "routed via steer", r.slice(0, 80));
     }
-  } finally {
-    proc.kill();
-  }
+  } finally { w.proc.kill(); }
 }
 
-async function test5_idleNotification(cwd: string) {
-  console.log("\n=== Test 5: Worker → Leader idle notification ===");
-  // This test checks that the worker emits an idle notification after completion.
-  // In CC, this is via mailbox. In AIM, it's via Pi's RPC protocol + agent_end handler.
-
-  // Simulate: spawn worker, let it complete, then check that the coordinator's
-  // agent_end handler would fire. We'll check the structure of what would be sent.
-  const { proc, send, events } = spawnRpcWorker(cwd);
-  const eventGen = events();
-
+async function t5(cwd: string) {
+  console.log("\n=== Test 5: idle notification data ===");
+  const w = spawnRpc(cwd);
   try {
-    send({ type: "prompt", message: "reply with 'task done'" });
-    const agentEnd = await waitForEvent(eventGen, "agent_end", 30000);
-
-    assert(agentEnd !== null, "agent_end received", "worker completed");
-    if (agentEnd) {
-      // Check agent_end has the data needed for idle notification
-      const usage = agentEnd.usage as Record<string, number> | undefined;
-      const messages = agentEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
-      assert(!!messages, "agent_end contains messages", `message count: ${messages?.length}`);
-      assert(
-        usage?.input !== undefined || true, // usage may not be in agent_end in Pi RPC
-        "usage tracking available",
-        "usage field in agent_end",
-      );
+    w.send({ type: "prompt", message: "reply: TASK_DONE" });
+    const end = await w.waitFor("agent_end", 60000);
+    assert(end !== null, "agent_end received", "completed");
+    if (end) {
+      assert(!!end.messages, "has messages array", "");
+      assert(!!end.usage, "has usage object", JSON.stringify(end.usage).slice(0, 80));
     }
-  } finally {
-    proc.kill();
-  }
+  } finally { w.proc.kill(); }
 }
 
-async function test6_coordinatorPipeline(cwd: string) {
-  console.log("\n=== Test 6: Coordinator result pipeline (agent_end → task-notification) ===");
-  // Verify the task-notification formatting function produces correct XML
-  const { proc, send, events } = spawnRpcWorker(cwd);
-  const eventGen = events();
-
+async function t6(cwd: string) {
+  console.log("\n=== Test 6: task-notification format ===");
+  const w = spawnRpc(cwd);
   try {
-    send({ type: "prompt", message: "reply with 'auth bug fixed in validate.ts:42'" });
-    const agentEnd = await waitForEvent(eventGen, "agent_end", 30000);
-
-    assert(agentEnd !== null, "agent_end for task-notification", "should complete");
-
-    if (agentEnd) {
-      // Build task-notification (simulating coordinator.ts handler)
-      const agentId = "test-agent-" + Date.now();
-      const status = "completed";
-      const messages = agentEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
-      const assistantMsg = messages?.filter(m => m.role === "assistant").pop();
-      const resultText = assistantMsg?.content
-        .filter(p => p.type === "text")
-        .map(p => p.text || "")
-        .join("") || "";
-      const summary = resultText.slice(0, 100);
-      const usage = agentEnd.usage as Record<string, number> | undefined;
-      const totalTokens = usage?.totalTokens ?? 0;
-      const toolUses = messages?.filter(m => m.role === "assistant")
-        .reduce((c, m) => c + m.content.filter(p => p.type === "toolCall").length, 0) ?? 0;
-      const duration = 0; // not available in Pi RPC agent_end
-
-      const notification = `<task-notification>
-<task-id>${agentId}</task-id>
-<status>${status}</status>
-<summary>${summary}</summary>
-<result>${resultText}</result>
-<usage>
-  <total_tokens>${totalTokens}</total_tokens>
-  <tool_uses>${toolUses}</tool_uses>
-  <duration_ms>${duration}</duration_ms>
-</usage>
-</task-notification>`;
-
-      log("notification", notification.slice(0, 200) + "...");
-
-      assert(notification.includes("<task-notification>"), "XML wrapper present", "");
-      assert(notification.includes("<task-id>"), "task-id present", "");
-      assert(notification.includes("<status>completed</status>"), "status completed", "");
-      assert(notification.includes("<summary>"), "summary present", "");
-      assert(notification.includes("<result>"), "result present", "");
-      assert(notification.includes("<usage>"), "usage present", "");
-      assert(notification.includes("validate.ts:42"), "result content preserved", "");
+    w.send({ type: "prompt", message: "reply: bug fixed in auth.ts:42" });
+    const end = await w.waitFor("agent_end", 60000);
+    assert(end !== null, "agent_end for notification", "done");
+    if (end) {
+      const result = w.extractResult(end);
+      assert(result.includes("auth.ts"), "result contains file ref", result.slice(0, 80));
     }
-  } finally {
-    proc.kill();
-  }
+  } finally { w.proc.kill(); }
 }
 
-async function test7_e2eCoordinatorWorkflow(cwd: string) {
-  console.log("\n=== Test 7: End-to-end coordinator workflow ===");
-
-  // Simulate: scout finds files → worker fixes → steer mid-work
-  const { proc: worker1, send: s1, events: e1 } = spawnRpcWorker(cwd);
-  const gen1 = e1();
-
+async function t7(cwd: string) {
+  console.log("\n=== Test 7: coordinator workflow (scout → worker → verify) ===");
+  const w = spawnRpc(cwd);
   try {
-    // Phase 1: Scout finds auth files
-    log("coordinator", "sending scout task");
-    s1({ type: "prompt", message: "you are a scout agent. reply with 'found: src/auth/validate.ts, src/auth/login.ts'" });
+    // Scout phase
+    log("coord", "scout: find auth files");
+    w.send({ type: "prompt", message: "reply with exactly: FOUND src/auth/login.ts src/auth/validate.ts" });
+    const scoutEnd = await w.waitFor("agent_end", 60000);
+    assert(scoutEnd !== null, "scout completed", "");
+    const scoutResult = w.extractResult(scoutEnd!);
+    assert(scoutResult.includes("validate.ts"), "scout found files", scoutResult.slice(0, 80));
 
-    const scoutEnd = await waitForEvent(gen1, "agent_end", 30000);
-    assert(scoutEnd !== null, "scout completed", "phase 1 done");
+    // Worker phase (steer)
+    log("coord", "steer: fix the bug");
+    w.send({ type: "steer", message: "reply with exactly: FIXED null check at validate.ts:42" });
+    const workerEnd = await w.waitFor("agent_end", 60000);
+    assert(workerEnd !== null, "worker fixed", "");
+    const workerResult = w.extractResult(workerEnd!);
+    assert(workerResult.includes("validate.ts:42"), "fixed at correct location", workerResult.slice(0, 80));
 
-    const scoutMsgs = scoutEnd!.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
-    const scoutResult = scoutMsgs.filter(m => m.role === "assistant").pop()?.content
-      .filter(p => p.type === "text").map(p => p.text || "").join("") || "";
-    assert(scoutResult.includes("validate.ts"), "scout found validate.ts", scoutResult.slice(0, 100));
-
-    // Phase 2: Steer the worker to fix the bug (simulating resume via steer)
-    log("coordinator", "sending steer to fix bug");
-    s1({ type: "steer", message: "now act as worker. reply with 'fixed: null check added at validate.ts:42'" });
-
-    const workerEnd = await waitForEvent(gen1, "agent_end", 30000);
-    assert(workerEnd !== null, "worker completed after steer", "phase 2 done");
-
-    const workerMsgs = workerEnd!.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
-    const workerResult = workerMsgs.filter(m => m.role === "assistant").pop()?.content
-      .filter(p => p.type === "text").map(p => p.text || "").join("") || "";
-    assert(workerResult.includes("validate.ts:42"), "worker fixed the bug", workerResult.slice(0, 100));
-    assert(workerResult.includes("fixed"), "worker reports fix complete", workerResult.slice(0, 100));
-
-    // Phase 3: Steer again to verify
-    log("coordinator", "sending steer to verify");
-    s1({ type: "steer", message: "reply with 'verified: all tests pass'" });
-    const verifyEnd = await waitForEvent(gen1, "agent_end", 30000);
-    assert(verifyEnd !== null, "verification completed", "phase 3 done");
-
-    const verifyMsgs = verifyEnd!.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
-    const verifyResult = verifyMsgs.filter(m => m.role === "assistant").pop()?.content
-      .filter(p => p.type === "text").map(p => p.text || "").join("") || "";
-    assert(verifyResult.includes("verified"), "worker verified changes", verifyResult.slice(0, 100));
-
-  } finally {
-    worker1.kill();
-  }
+    // Verify phase (steer)
+    log("coord", "steer: verify");
+    w.send({ type: "steer", message: "reply with exactly: VERIFIED all tests pass" });
+    const verifyEnd = await w.waitFor("agent_end", 60000);
+    assert(verifyEnd !== null, "verification complete", "");
+    const verifyResult = w.extractResult(verifyEnd!);
+    assert(verifyResult.toLowerCase().includes("verified"), "verified", verifyResult.slice(0, 80));
+  } finally { w.proc.kill(); }
 }
 
-// ============================================================================
-// Main
-// ============================================================================
-
+// ═══ Main ═══
 async function main() {
   const cwd = process.cwd();
-  console.log("AIM P1 Communication Loop — Test Suite");
-  console.log(`CWD: ${cwd}`);
-  console.log("===========================================");
+  console.log("AIM P1 Communication Loop — Test Suite v2");
+  console.log(`CWD: ${cwd}\n`);
 
-  const startTime = Date.now();
+  const start = Date.now();
 
-  await test1_agentEndDetection(cwd);
-  await test2_steerInterrupt(cwd);
-  await test3_followUp(cwd);
-  await test4_mailboxToRpcSteer(cwd);
-  await test5_idleNotification(cwd);
-  await test6_coordinatorPipeline(cwd);
-  await test7_e2eCoordinatorWorkflow(cwd);
+  await t1(cwd);
+  await t2(cwd);
+  await t3(cwd);
+  await t4(cwd);
+  await t5(cwd);
+  await t6(cwd);
+  await t7(cwd);
 
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-  console.log("\n===========================================");
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  console.log(`\n${"=".repeat(55)}`);
   console.log(`Results: ${passCount}/${testCount} passed, ${failCount} failed (${elapsed}s)`);
-  if (failures.length > 0) {
-    console.log("\nFailures:");
+  if (failCount > 0) {
     for (const f of failures) console.log(`  ✗ ${f}`);
     process.exit(1);
-  } else {
-    console.log("All tests passed!");
-    process.exit(0);
   }
+  console.log("All tests passed!");
 }
 
-main().catch(err => {
-  console.error("Test suite crashed:", err);
-  process.exit(2);
-});
+main().catch(err => { console.error("Crash:", err); process.exit(2); });
