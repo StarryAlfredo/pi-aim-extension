@@ -159,7 +159,10 @@ let cachedAgentList: string | null = null;
 export function refreshAgentList(cwd: string) {
   const { agents } = discoverAgents(cwd, "both");
   cachedAgentList = agents
-    .map(a => `- **${a.name}** (${a.source}): ${a.description}`)
+    .map(a => {
+      const toolsStr = a.tools?.length ? ` Tools: ${a.tools.join(", ")}` : "";
+      return `- **${a.name}** (${a.source}): ${a.description}.${toolsStr}`;
+    })
     .join("\n") || "- (no agents configured)";
   return cachedAgentList;
 }
