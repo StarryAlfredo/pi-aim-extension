@@ -39,15 +39,31 @@ function getPiCommand(): { command: string; args: string[] } {
   if (execPath && fileExists(execPath)) {
     return { command: process.execPath, args: [execPath] };
   }
+
+  // On Windows, Node.js spawn() cannot directly execute .cmd files (EINVAL).
+  // Instead, resolve pi.cmd to find the actual JS entry point and use node.
+  if (process.platform === "win32" && process.execPath) {
+    const nodeDir = path.dirname(process.execPath);
+    const cliJs = path.join(nodeDir, "node_modules", "@mariozechner", "pi-coding-agent", "dist", "cli.js");
+    if (fileExists(cliJs)) {
+      return { command: process.execPath, args: [cliJs] };
+    }
+    // Fallback: try the .bin symlink path
+    const binCliJs = path.join(nodeDir, "node_modules", ".bin", "pi");
+    if (fileExists(binCliJs)) {
+      return { command: process.execPath, args: [binCliJs] };
+    }
+  }
+
   if (process.execPath) {
     const nodeDir = path.dirname(process.execPath);
     const candidates = [
-      path.join(nodeDir, "pi.cmd"), path.join(nodeDir, "pi"),
-      path.join(nodeDir, "node_modules", ".bin", "pi.cmd"),
+      path.join(nodeDir, "pi"),
       path.join(nodeDir, "node_modules", ".bin", "pi"),
     ];
     for (const c of candidates) { if (fileExists(c)) return { command: c, args: [] }; }
   }
+
   const isWin = process.platform === "win32";
   return { command: isWin ? "pi.cmd" : "pi", args: [] };
 }
