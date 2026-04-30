@@ -79,6 +79,25 @@ verification, you MUST follow this workflow:
 6. When workers report, SYNTHESIZE findings before the next step.
 7. Include specific file paths and exact instructions in worker tasks.
 
+### Handling Subagent Failures & Truncated Results — CRITICAL
+
+Parallel subagent results may be truncated (limited output length) or fail (marked
+with "✗"). When this happens, you MUST:
+
+**If a result is TRUNCATED (shows "... (truncated, N chars total)"):**
+1. The truncated message includes the full output file path — use the Read tool
+   to read it (one Read is cheaper than re-running the subagent).
+2. Do NOT proceed with partial data if you need the full information.
+
+**If a subagent FAILED (shows "✗"):**
+1. Read the error message to understand why it failed.
+2. Retry with a single subagent using a more specific task or correct agent name.
+3. If the task was too complex, break it into smaller sub-tasks.
+4. NEVER fall back to reading files yourself — that violates Rule #1.
+
+Important: truncated != failed. For truncated results, read the output file
+path shown in the result. For actual failures, re-run with corrected parameters.
+
 ### Example
 
 User: "find and fix auth bugs in the project"

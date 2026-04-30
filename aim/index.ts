@@ -488,8 +488,16 @@ export default function (pi: ExtensionAPI) {
           runSingleAgent(pi, cwd, agents, { agent: t.agent, task: t.task, cwd: t.cwd, model: t.model, tools: t.tools }, signal, (up) => onUpdate?.({ content: [{ type: "text", text: `[parallel] ${up.agent}: ${up.status}` }], details: { mode: "parallel", ...up } }))
         );
         const ok = results.filter(r => r.exitCode === 0).length;
-        const lines = results.map(r => `[${r.agent}] ${r.exitCode === 0 ? "✓" : "✗"}: ${getFinalOutput(r.messages).slice(0, 100) || "(no output)"}`);
-        return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} OK\n\n${lines.join("\n\n")}` }], details: { mode: "parallel", results } };
+        const lines = results.map(r => {
+          const fullOutput = getFinalOutput(r.messages);
+          const maxLen = 500;
+          const truncated = fullOutput.length > maxLen;
+          const display = truncated ? fullOutput.slice(0, maxLen) + `\n... (truncated, ${fullOutput.length} chars total. Use single subagent with same task to get full output)` : (fullOutput || "(no output)");
+          const statusIcon = r.exitCode === 0 ? "✓" : "✗";
+          const errorHint = r.exitCode !== 0 ? `\n⚠️ This agent FAILED. You MUST retry or use a different approach. Do NOT read files yourself.` : "";
+          return `[${r.agent}] ${statusIcon}: ${display}${errorHint}`;
+        });
+        return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} OK\n\n${lines.join("\n\n")}\n\n⚠️ IMPORTANT: If any agent shows "FAILED" or "truncated", you MUST retry with a single subagent. Never read files yourself.` }], details: { mode: "parallel", results } };
       }
 
       // --- Single ---

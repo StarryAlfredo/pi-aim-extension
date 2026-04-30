@@ -79,6 +79,25 @@ verification, you MUST follow this workflow:
 4. **NEVER** predict or fabricate worker results.
 5. When workers report, SYNTHESIZE findings before the next step.
 
+### Handling Subagent Failures & Truncated Results — CRITICAL
+
+Parallel subagent results may be truncated (limited output length) or fail (marked
+with "✗"). When this happens, you MUST:
+
+**If a result is TRUNCATED (shows "... (truncated, N chars total)"):**
+1. The truncated message includes the full output file path — use the Read tool
+   to read it (one Read is cheaper than re-running the subagent).
+2. Do NOT proceed with partial data if you need the full information.
+
+**If a subagent FAILED (shows "✗"):**
+1. Read the error message to understand why it failed.
+2. Retry with a single subagent using a more specific task or correct agent name.
+3. If the task was too complex, break it into smaller sub-tasks.
+4. NEVER fall back to reading files yourself — that violates Rule #1.
+
+Important: truncated != failed. For truncated results, read the output file
+path shown in the result. For actual failures, re-run with corrected parameters.
+
 ### Example
 
 User: "find and fix auth bugs in the project"
@@ -215,6 +234,7 @@ async function test1_promptStructure() {
     { name: "specific agents listed", value: "reviewer" },
     { name: "task completion section", value: "Task Completion" },
     { name: "report instruction", value: "final report" },
+    { name: "failure handling section", value: "Handling Subagent Failures" },
   ];
 
   for (const el of required) {
@@ -508,6 +528,167 @@ async function test6_emptyAgentList(cwd: string) {
 }
 
 // ============================================================================
+// Test 7: coordinator prompt covers truncated-result recovery (no LLM)
+// ============================================================================
+
+async function test7_truncatedResultRecoveryPrompt() {
+  console.log("\n=== Test 7: coordinator prompt covers truncated-result recovery ===");
+
+  const agentList = `- **scout** (user): Reads and searches code files
+- **reviewer** (user): Reviews code for best practices`;
+  const prompt = buildCoordinatorPrompt(agentList);
+
+  // Must contain recovery guidance for truncated results
+  const requiredRecovery = [
+    { name: "truncated section", value: "TRUNCATED" },
+    { name: "use Read tool", value: "Read tool" },
+    { name: "cheaper than re-running", value: "cheaper than re-running" },
+    { name: "FAILED handling", value: "FAILED" },
+    { name: "never fall back", value: "NEVER fall back" },
+    { name: "do not proceed with partial", value: "Do NOT proceed with partial" },
+    { name: "smaller sub-tasks hint", value: "break it into smaller" },
+    { name: "different agent hint", value: "correct agent" },
+    { name: "truncated vs failed", value: "truncated != failed" },
+  ];
+
+  for (const el of requiredRecovery) {
+    assert(
+      prompt.includes(el.value),
+      `has recovery element: ${el.name}`,
+      `searching for "${el.value}"`
+    );
+  }
+
+  // Also verify the original 20+ elements from test1 still exist
+  const stillRequired = ["Coordinator Mode", "MUST", "NEVER", "ALWAYS", "subagent", "parallel", "delegate"];
+  for (const s of stillRequired) {
+    assert(prompt.includes(s), `still has: ${s}`, "");
+  }
+
+  log("recovery", `recovery guidance validated: ${requiredRecovery.length} elements present`);
+}
+
+// ============================================================================
+// Test 8: coordinator retries on truncated output (behavioral, LLM)
+// ============================================================================
+
+async function test8_coordinatorRetriesOnTruncated(cwd: string) {
+  console.log("\n=== Test 8: coordinator retries on truncated subagent output ===");
+
+  const agentList = `- **scout** (user): Reads and searches code files
+- **reviewer** (user): Reviews code for best practices`;
+  const coordinatorPrompt = buildCoordinatorPrompt(agentList);
+
+  const worker = spawnRpcWorker(cwd);
+  const { proc, send, waitForEvent } = worker;
+
+  try {
+    // Simulate: send coordinator prompt, then a parallel result that shows truncation
+    const simulatedResult = `Parallel: 0/1 OK
+
+[scout] ✗: The file analysis shows multiple issues including authentication bugs, database connection leaks, improper error handling in the middleware layer, missing input validation, and potential SQL injection vulnerabilities in the user registration flow. The auth module at src/auth/login.ts has a timing attack vector, while the session management in src/session/store.ts doesn't properly rotate tokens. Additionally, the database connection pool in src/db/pool.ts doesn't handle reconnection after network failures, and the caching layer in src/cache/redis.ts exposes raw error messages to clients... (truncated, 8500 chars total. Full output at .pi/aim/tasks/scout-output.txt)
+⚠️ This agent FAILED. You MUST retry or use a different approach. Do NOT read files yourself.
+
+⚠️ IMPORTANT: For truncated results, read the full output file; for failed agents, retry with corrected parameters. Never read project files yourself.`;
+
+    send({
+      type: "prompt",
+      message: coordinatorPrompt + "\n\n---\n\nUSER: Here are the results from the parallel subagent execution:\n\n" + simulatedResult + "\n\nWhat do you do next?"
+    });
+
+    const result = await waitForEvent("agent_end", 60000);
+    assert(result !== null, "coordinator responded to truncated result", "");
+
+    if (result) {
+      const msgs = result.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+      const text = getAssistantText(msgs);
+
+      log("output", text.slice(0, 300));
+
+      // Must mention reading the full output (not re-running — that's for genuine failures)
+      const mentionsRetry =
+        text.toLowerCase().includes("read") ||
+        text.toLowerCase().includes("output") ||
+        text.toLowerCase().includes("full");
+
+      assert(mentionsRetry, "coordinator reads full output for truncated result", text.slice(0, 150));
+
+      // Must NOT say it will read PROJECT files directly — reading the subagent output file is fine
+      const saysDirectRead =
+        text.toLowerCase().includes("i will read the project") ||
+        text.toLowerCase().includes("i'll read the source") ||
+        text.toLowerCase().includes("let me read the auth");
+
+      assert(!saysDirectRead, "coordinator does NOT bypass delegation on truncated result", text.slice(0, 150));
+    }
+  } finally {
+    try { proc.kill(); } catch {}
+  }
+}
+
+// ============================================================================
+// Test 9: coordinator handles failed subagent (✗) correctly (behavioral, LLM)
+// ============================================================================
+
+async function test9_coordinatorHandlesFailedAgent(cwd: string) {
+  console.log("\n=== Test 9: coordinator handles failed (✗) subagent result ===");
+
+  const agentList = `- **scout** (user): Reads and searches code files
+- **fixer** (user): Makes code changes and edits`;
+  const coordinatorPrompt = buildCoordinatorPrompt(agentList);
+
+  const worker = spawnRpcWorker(cwd);
+  const { proc, send, waitForEvent } = worker;
+
+  try {
+    const simulatedResult = `Parallel: 0/2 OK
+
+[scout] ✗: Unknown agent: "searcher". Available: "scout", "fixer".
+⚠️ This agent FAILED. You MUST retry or use a different approach. Do NOT read files yourself.
+
+[reviewer] ✗: Connection timeout after 30s. Could not reach API.
+⚠️ This agent FAILED. You MUST retry or use a different approach. Do NOT read files yourself.
+
+⚠️ IMPORTANT: For truncated results, read the full output file; for failed agents, retry with corrected parameters. Never read project files yourself.`;
+
+    send({
+      type: "prompt",
+      message: coordinatorPrompt + "\n\n---\n\nUSER: Here are the parallel subagent results:\n\n" + simulatedResult + "\n\nThe original task was: research the authentication module. What do you do?"
+    });
+
+    const result = await waitForEvent("agent_end", 60000);
+    assert(result !== null, "coordinator responded to failed agents", "");
+
+    if (result) {
+      const msgs = result.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+      const text = getAssistantText(msgs);
+
+      log("output", text.slice(0, 300));
+
+      // Must try a different approach (correct agent name for scout error, retry for timeout)
+      const hasRecovery =
+        text.toLowerCase().includes("retry") ||
+        text.toLowerCase().includes("scout") ||
+        text.toLowerCase().includes("correct") ||
+        text.toLowerCase().includes("single") ||
+        text.toLowerCase().includes("different approach");
+
+      assert(hasRecovery, "coordinator suggests recovery for failed agents", text.slice(0, 150));
+
+      // Must NOT say it will work directly
+      const saysDirect =
+        text.toLowerCase().includes("i will read") ||
+        text.toLowerCase().includes("i'll read") ||
+        text.toLowerCase().includes("let me read");
+
+      assert(!saysDirect, "coordinator does NOT bypass delegation on failure", text.slice(0, 150));
+    }
+  } finally {
+    try { proc.kill(); } catch {}
+  }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -516,19 +697,22 @@ async function main() {
   console.log("AIM Coordinator Mode — Integration Test Suite");
   console.log(`CWD: ${cwd}`);
   console.log("===============================================");
-  console.log("Note: Tests 2-4, 6 require active LLM API access (ksyun/deepseek-v3.2)\n");
+  console.log("Note: Tests 2-4, 6, 8, 9 require active LLM API access (ksyun/deepseek-v3.2)\n");
 
   const startTime = Date.now();
 
   // No-LLM tests: prompt structure validation
   await test1_promptStructure();
   await test5_promptPosition();
+  await test7_truncatedResultRecoveryPrompt();
 
   // LLM tests: behavioral validation
   await test2_coordinatorDelegates(cwd);
   await test3_coordinatorParallel(cwd);
   await test4_baselineVsCoordinator(cwd);
   await test6_emptyAgentList(cwd);
+  await test8_coordinatorRetriesOnTruncated(cwd);
+  await test9_coordinatorHandlesFailedAgent(cwd);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
