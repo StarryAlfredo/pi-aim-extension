@@ -161,18 +161,6 @@ export class WorkerPool {
     proc.on("close", (code) => {
       info.state = "dead";
       info.exitCode = code ?? undefined;
-      // Debug: write exit info to file
-      try {
-        const debugDir = path.join(config.cwd || process.cwd(), ".pi", "aim");
-        fs.mkdirSync(debugDir, { recursive: true });
-        fs.writeFileSync(path.join(debugDir, `spawn-debug-${info.config.name}.txt`),
-          `Command: ${piCmd.command} ${[...piCmd.args, ...args].join(" ")}\n` +
-          `CWD: ${config.cwd}\n` +
-          `ExitCode: ${code}\n` +
-          `Stderr: ${info.stderr}\n` +
-          `Messages: ${info.messages.length}\n`,
-          "utf-8");
-      } catch {}
       // Resolve donePromise if still pending (e.g. print mode, or kill() before agent_end)
       if (info.doneResolve) {
         code === 0 ? info.doneResolve() : info.doneReject?.(new Error(`Worker exited with code ${code}`));
@@ -262,6 +250,8 @@ export class WorkerPool {
           if (event.type === "agent_end") {
             info.turnCount = (info.turnCount || 0) + 1;
             info.state = "idle";
+            // Mark as success — the agent completed its turn
+            if (info.exitCode === undefined) info.exitCode = 0;
 
             // Store usage from agent_end for idle notifications
             if (event.usage) {
