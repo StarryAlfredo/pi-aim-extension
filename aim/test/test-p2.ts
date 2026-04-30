@@ -97,9 +97,9 @@ function spawnWorker(cwd: string, model?: string): {
   waitForEvent(eventType: string, timeoutMs?: number): Promise<Record<string, unknown> | null>;
   stop(): void;
 } {
-  const args: string[] = ["--mode", "rpc", "--no-session", "--model", model ?? "zai/glm-5.1"];
+  const args: string[] = ["--mode", "rpc", "--no-session", "--no-tools", "--thinking", "off", "--model", model ?? "zai/glm-5.1"];
   const piCmd = process.platform === "win32"
-    ? ["cmd", "/c", "D:\\nodeJS\\pi.cmd"]
+    ? ["cmd", "/c", "C:\\Users\\Administrator\\AppData\\Roaming\\npm\\pi.cmd"]
     : ["pi"];
   const proc = spawn(piCmd[0], [...piCmd.slice(1), ...args], {
     cwd, stdio: ["pipe", "pipe", "pipe"],
@@ -109,6 +109,10 @@ function spawnWorker(cwd: string, model?: string): {
   const pending: Array<{ eventType: string; resolve: (v: Record<string, unknown> | null) => void; deadline: number }> = [];
   let stopped = false;
 
+  proc.stdin?.on("error", () => { /* ignore EPIPE */ });
+  proc.stderr?.on("data", () => { /* drain stderr */ });
+  proc.on("error", () => { stopped = true; });
+  proc.on("exit", () => { stopped = true; });
   proc.stdout?.on("data", (data: Buffer) => {
     if (stopped) return;
     const lines = data.toString().split("\n");
@@ -129,7 +133,11 @@ function spawnWorker(cwd: string, model?: string): {
   });
 
   function send(obj: Record<string, unknown>) {
-    if (!proc.stdin?.destroyed) proc.stdin.write(JSON.stringify(obj) + "\n");
+    try {
+      if (!stopped && !proc.stdin?.destroyed) proc.stdin.write(JSON.stringify(obj) + "\n");
+    } catch {
+      // process already exited; ignore EPIPE
+    }
   }
 
   function waitForEvent(eventType: string, timeoutMs = 30000): Promise<Record<string, unknown> | null> {

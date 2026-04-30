@@ -1,37 +1,42 @@
 /**
- * AIM — Inbox Poller
+ * AIM — Inbox Poller (P2 enhanced)
  *
  * Continuous polling loop for long-lived agents. Used by teammates
- * to wait for new prompts or shutdown requests.
+ * to wait for new prompts, shutdown requests, or available tasks.
  *
- * Polls the agent's inbox every 500ms, checking for:
- * - Shutdown request from leader (returned to caller for model decision)
- * - New messages/prompts from leader or peers
- * - Abort signal
+ * Priority:
+ *   1. Shutdown requests       (highest — always respond first)
+ *   2. Team-lead messages       (leader coordination)
+ *   3. Peer messages            (other workers)
+ *   4. Task list claim          (available tasks)
  *
- * This keeps the teammate alive in 'idle' state instead of terminating.
- *
- * NOTE: This is intended for long-lived teammates running in RPC mode
- * (not the default print-mode workers). RPC-mode teammates are planned
- * for a future iteration.
+ * P2 additions:
+ *   - Structured message parsing (shutdown_request, plan_approval)
+ *   - Task list polling and claiming
+ *   - Idle notification to leader
  */
 
-import type { AbortSignal } from "node:child_process"; // type only
-import { readUnreadMessages, markMessageAsRead } from "./mailbox.js";
-import { createIdleNotification, writeToMailbox } from "./mailbox.js";
+import { readUnreadMessages, markMessageAsRead, parseStructuredMessage } from "./mailbox.js";
+import { writeToMailbox, createIdleNotification } from "./mailbox.js";
+import { findAvailableTask, claimTask } from "./shared-tasks.js";
 
 // ============================================================================
-// Polling
+// Types
 // ============================================================================
 
 export type PollResult =
-  | { type: "shutdown_request"; request: { request_id: string; from: string; reason?: string }; original: string }
-  | { type: "new_message"; message: string; from: string }
+  | { type: "shutdown_request"; request: { requestId: string; from: string; reason?: string }; original: string }
+  | { type: "new_message"; message: string; from: string; isStructured: boolean; structured?: ReturnType<typeof parseStructuredMessage> }
+  | { type: "task_claimed"; taskId: string; subject: string; prompt: string }
   | { type: "aborted" };
 
+// ============================================================================
+// Main Poller
+// ============================================================================
+
 /**
- * Blocking poll loop — waits for inbox messages or shutdown signal.
- * Returns when a message is received or the signal is aborted.
+ * Blocking poll loop — waits for inbox messages, shutdown signal, or available tasks.
+ * Returns when something is found or the signal is aborted.
  */
 export async function pollInbox(
   cwd: string,
@@ -44,33 +49,72 @@ export async function pollInbox(
   while (!signal.aborted) {
     const unread = await readUnreadMessages(cwd, agentName, teamName);
 
-    // Check unread messages
+    // --- Priority 1: Shutdown requests ---
+    let shutdownIdx = -1;
+    let shutdownParsed: ReturnType<typeof parseStructuredMessage> | null = null;
     for (let i = 0; i < unread.length; i++) {
       const msg = unread[i];
       if (!msg) continue;
-
-      // Check for shutdown requests
-      try {
-        const parsed = JSON.parse(msg.text) as Record<string, unknown>;
-        if (parsed.type === "shutdown_request" && typeof parsed.request_id === "string") {
-          await markMessageAsRead(cwd, agentName, teamName, i);
-          return {
-            type: "shutdown_request",
-            request: { request_id: parsed.request_id, from: msg.from, reason: typeof parsed.reason === "string" ? parsed.reason : undefined },
-            original: msg.text,
-          };
-        }
-      } catch {
-        // Not JSON, treat as regular message
+      const parsed = parseStructuredMessage(msg.text);
+      if (parsed.kind === "shutdown_request") {
+        shutdownIdx = i;
+        shutdownParsed = parsed;
+        break;
       }
-
-      // Regular message
-      await markMessageAsRead(cwd, agentName, teamName, i);
-      return { type: "new_message", message: msg.text, from: msg.from };
     }
 
-    // No messages — wait and retry
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    if (shutdownIdx !== -1 && shutdownParsed?.kind === "shutdown_request") {
+      const msg = unread[shutdownIdx]!;
+      await markMessageAsRead(cwd, agentName, teamName, shutdownIdx);
+      return {
+        type: "shutdown_request",
+        request: {
+          requestId: shutdownParsed.requestId,
+          from: shutdownParsed.from,
+          reason: shutdownParsed.reason,
+        },
+        original: msg.text,
+      };
+    }
+
+    // --- Priority 2: Team-lead messages ---
+    let leadIdx = -1;
+    for (let i = 0; i < unread.length; i++) {
+      if (unread[i]?.from === "team-lead") { leadIdx = i; break; }
+    }
+    if (leadIdx !== -1) {
+      const msg = unread[leadIdx]!;
+      const parsed = parseStructuredMessage(msg.text);
+      await markMessageAsRead(cwd, agentName, teamName, leadIdx);
+      return { type: "new_message", message: msg.text, from: msg.from, isStructured: parsed.kind !== "plain_text", structured: parsed };
+    }
+
+    // --- Priority 3: Peer messages ---
+    let peerIdx = -1;
+    for (let i = 0; i < unread.length; i++) {
+      if (unread[i]?.from !== "team-lead") { peerIdx = i; break; }
+    }
+    if (peerIdx !== -1) {
+      const msg = unread[peerIdx]!;
+      const parsed = parseStructuredMessage(msg.text);
+      await markMessageAsRead(cwd, agentName, teamName, peerIdx);
+      return { type: "new_message", message: msg.text, from: msg.from, isStructured: parsed.kind !== "plain_text", structured: parsed };
+    }
+
+    // --- Priority 4: Task list claim ---
+    if (teamName) {
+      const available = findAvailableTask(cwd, teamName);
+      if (available) {
+        const claimed = await claimTask(cwd, teamName, available.id, agentName);
+        if (claimed) {
+          const prompt = `Complete task #${claimed.id}: ${claimed.subject}\n\n${claimed.description || ""}`;
+          return { type: "task_claimed", taskId: claimed.id, subject: claimed.subject, prompt };
+        }
+      }
+    }
+
+    // Nothing found — wait and retry
+    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
   }
 
   return { type: "aborted" };
@@ -78,7 +122,6 @@ export async function pollInbox(
 
 /**
  * Send an idle notification to the team leader.
- * Called after a teammate finishes its current task.
  */
 export async function sendIdleNotification(
   cwd: string,
@@ -88,8 +131,6 @@ export async function sendIdleNotification(
 ): Promise<void> {
   const payload = createIdleNotification(agentName, options);
   await writeToMailbox(cwd, "team-lead", {
-    from: agentName,
-    text: payload,
-    timestamp: new Date().toISOString(),
+    from: agentName, text: payload, timestamp: new Date().toISOString(),
   }, teamName);
 }

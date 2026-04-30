@@ -52,6 +52,7 @@ import {
   writeAgentMetadata, readAgentMetadata, readTranscript, appendToTranscript,
   recordSubagentSpawn, recordSubagentResult,
 } from "./aim-transcript.js";
+import { listTasks, createTask, updateTask, claimTask, findAvailableTask } from "./shared-tasks.js";
 
 // Re-export for other extensions
 export { workerPool } from "./worker-pool.js";
@@ -60,6 +61,8 @@ export { discoverAgents, formatAgentList } from "./agents.js";
 export { createTeam, deleteTeam, spawnTeammate, getActiveTeam } from "./teams.js";
 export { pollInbox, sendIdleNotification } from "./poller.js";
 export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult } from "./aim-transcript.js";
+export { listTasks, createTask, updateTask, claimTask, findAvailableTask } from "./shared-tasks.js";
+export { parseStructuredMessage, createPlanApprovalRequest, createPlanApprovalResponse } from "./mailbox.js";
 export type { WorkerConfig, WorkerInfo, AgentConfig, AgentScope, AgentDiscoveryResult, TeammateMessage, TeamFile, TeamMember, SubagentSpawnData, SubagentResultData } from "./types.js";
 
 // ============================================================================

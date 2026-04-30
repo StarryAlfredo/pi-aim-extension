@@ -199,3 +199,50 @@ export function createIdleNotification(
     ...options,
   });
 }
+
+// ============================================================================
+// P2: Structured Message Parsing (unified dispatcher)
+// ============================================================================
+
+/** Unified parsed structured message */
+export type ParsedStructuredMessage =
+  | { kind: "shutdown_request"; requestId: string; from: string; reason?: string }
+  | { kind: "shutdown_response"; requestId: string; from: string; approved: boolean; reason?: string }
+  | { kind: "plan_approval_request"; requestId: string; from: string; plan: string }
+  | { kind: "plan_approval_response"; requestId: string; from: string; approved: boolean; feedback?: string }
+  | { kind: "plain_text"; text: string };
+
+/**
+ * Parse any inbox message text into a typed structured message.
+ * Falls back to plain_text if the text is not JSON or is unknown.
+ */
+export function parseStructuredMessage(text: string): ParsedStructuredMessage {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const msgType = parsed.type as string | undefined;
+
+    if (msgType === "shutdown_request" && typeof parsed.request_id === "string" && typeof parsed.from === "string") {
+      return { kind: "shutdown_request", requestId: parsed.request_id, from: parsed.from, reason: typeof parsed.reason === "string" ? parsed.reason : undefined };
+    }
+    if (msgType === "shutdown_response" && typeof parsed.request_id === "string" && typeof parsed.from === "string") {
+      return { kind: "shutdown_response", requestId: parsed.request_id, from: parsed.from, approved: parsed.approved === true, reason: typeof parsed.reason === "string" ? parsed.reason : undefined };
+    }
+    if (msgType === "plan_approval_request" && typeof parsed.request_id === "string" && typeof parsed.from === "string") {
+      return { kind: "plan_approval_request", requestId: parsed.request_id, from: parsed.from, plan: typeof parsed.plan === "string" ? parsed.plan : "" };
+    }
+    if (msgType === "plan_approval_response" && typeof parsed.request_id === "string" && typeof parsed.from === "string") {
+      return { kind: "plan_approval_response", requestId: parsed.request_id, from: parsed.from, approved: parsed.approved === true, feedback: typeof parsed.feedback === "string" ? parsed.feedback : undefined };
+    }
+  } catch { /* not JSON — plain text */ }
+  return { kind: "plain_text", text };
+}
+
+/** Create a plan approval request */
+export function createPlanApprovalRequest(requestId: string, from: string, plan: string): string {
+  return JSON.stringify({ type: "plan_approval_request", request_id: requestId, from, plan });
+}
+
+/** Create a plan approval response */
+export function createPlanApprovalResponse(requestId: string, from: string, approved: boolean, feedback?: string): string {
+  return JSON.stringify({ type: "plan_approval_response", request_id: requestId, from, approved, feedback });
+}
