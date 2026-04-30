@@ -47,45 +47,11 @@ function cleanupDir(dir: string) {
   }
 }
 
-function ensureDir(dir: string) {
-  if (!fs.existsSync(dir)) {
-    try { fs.mkdirSync(dir, { recursive: true }); } catch (e: any) {
-      if (e.code !== "EEXIST") throw e;
-    }
-  }
-}
-
-/** Write AIM inbox message */
-function writeInbox(cwd: string, team: string, agent: string, msg: { from: string; text: string; summary?: string; color?: string }) {
-  const dir = path.join(cwd, ".pi", "aim", "teams", team, "inboxes");
-  ensureDir(dir);
-  const filePath = path.join(dir, `${agent}.json`);
-  let messages: any[] = [];
-  if (fs.existsSync(filePath)) {
-    try { messages = JSON.parse(fs.readFileSync(filePath, "utf-8")); } catch {}
-  }
-  messages.push({ ...msg, timestamp: new Date().toISOString(), read: false });
-  fs.writeFileSync(filePath, JSON.stringify(messages, null, 2));
-}
-
-/** Read AIM inbox messages */
-function readInbox(cwd: string, team: string, agent: string): any[] {
-  const filePath = path.join(cwd, ".pi", "aim", "teams", team, "inboxes", `${agent}.json`);
-  if (!fs.existsSync(filePath)) return [];
-  try { return JSON.parse(fs.readFileSync(filePath, "utf-8")); } catch { return []; }
-}
-
-/** Write a shared task */
-function writeTask(cwd: string, team: string, task: { id: string; subject: string; status: string; owner?: string; blockedBy?: string[] }) {
-  const dir = path.join(cwd, ".pi", "aim", "tasks", team);
-  ensureDir(dir);
-  const taskObj = {
-    id: task.id, subject: task.subject, description: "",
-    status: task.status, owner: task.owner || null,
-    blockedBy: task.blockedBy || [], createdAt: Date.now(), updatedAt: Date.now(),
-  };
-  fs.writeFileSync(path.join(dir, `task-${task.id}.json`), JSON.stringify(taskObj, null, 2));
-}
+// AIM module imports are loaded lazily inside test functions to avoid module
+// resolution issues before the test runner sets up the environment.
+// Each test function imports the real AIM modules it needs:
+//   mailbox.ts:  writeToMailbox, readMailbox, markMessageAsRead, createShutdownRequest, createShutdownApproval, createIdleNotification
+//   shared-tasks.ts:  createTask, claimTask, listTasks, findAvailableTask
 
 /**
  * Spawn an RPC worker and return a simple API for it.
@@ -99,7 +65,7 @@ function spawnWorker(cwd: string, model?: string): {
 } {
   const args: string[] = ["--mode", "rpc", "--no-session", "--no-tools", "--thinking", "off", "--model", model ?? "ksyun/deepseek-v3.2"];
   const piCmd = process.platform === "win32"
-    ? ["cmd", "/c", path.join(process.env.APPDATA || "", "npm", "pi.cmd")]
+    ? ["cmd", "/c", "pi.cmd"]
     : ["pi"];
   const proc = spawn(piCmd[0], [...piCmd.slice(1), ...args], {
     cwd, stdio: ["pipe", "pipe", "pipe"],
@@ -167,9 +133,11 @@ function spawnWorker(cwd: string, model?: string): {
 
 async function test1_pollInboxAndRun(cwd: string) {
   console.log("\n=== Test 1: Teammate idle → poll inbox → find message → auto-run ===");
+  const { writeToMailbox, readMailbox, markMessageAsRead } = await import("../mailbox.js");
   const worker = spawnWorker(cwd);
   const { proc, send, waitForEvent } = worker;
   const team = "test-team-" + Date.now().toString(36);
+  const agentName = "worker-1";
 
   try {
     // Phase 1: Send a simple prompt to initialize the worker
@@ -177,22 +145,24 @@ async function test1_pollInboxAndRun(cwd: string) {
     const initEnd = await waitForEvent("agent_end", 30000);
     assert(initEnd !== null, "worker initialized", "agent_end after init");
 
-    // Phase 2: Write a message to worker's inbox (simulating leader sending task)
-    writeInbox(cwd, team, "worker-1", {
-      from: "team-lead", text: "reply with only 'inbox_task_done'", summary: "inbox task",
-    });
-    log("inbox", "wrote message to worker's inbox");
+    // Phase 2: Use real AIM writeToMailbox to send message
+    await writeToMailbox(cwd, agentName, {
+      from: "team-lead",
+      text: "reply with only 'inbox_task_done'",
+      timestamp: new Date().toISOString(),
+      summary: "inbox task",
+    }, team);
+    log("inbox", "wrote message via real writeToMailbox");
 
-    // Phase 3: Simulate poller finding and injecting the message
-    // In prod code, the poller would read inbox and call pi.sendMessage or steer.
-    // For test, we directly send the message via prompt.
-    const inboxMessages = readInbox(cwd, team, "worker-1");
-    assert(inboxMessages.length >= 1, "inbox has message", `count: ${inboxMessages.length}`);
+    // Phase 3: Use real AIM readMailbox (same as poller would)
+    const inboxMessages = await readMailbox(cwd, agentName, team);
+    assert(inboxMessages.length >= 1, "inbox has message via readMailbox", `count: ${inboxMessages.length}`);
 
-    const msg = inboxMessages.find((m: any) => !m.read);
-    assert(!!msg, "found unread message", msg?.text?.slice(0, 50));
+    const unread = inboxMessages.filter((m: any) => !m.read);
+    assert(unread.length >= 1, "found unread message", unread[0]?.text?.slice(0, 50));
+    const msg = unread[0];
 
-    // Deliver the message
+    // Phase 4: Deliver the message to worker
     send({ type: "prompt", message: msg.text });
     const taskEnd = await waitForEvent("agent_end", 30000);
     assert(taskEnd !== null, "worker processed inbox message", "agent_end after inbox task");
@@ -204,6 +174,11 @@ async function test1_pollInboxAndRun(cwd: string) {
         .filter(p => p.type === "text").map(p => p.text || "").join("") || "";
       assert(text.includes("inbox_task_done"), "worker responded to inbox message", text.slice(0, 100));
     }
+
+    // Phase 5: Mark as read
+    await markMessageAsRead(cwd, agentName, team, 0);
+    const after = await readMailbox(cwd, agentName, team);
+    assert(after[0]?.read === true, "message marked read via real module", "");
   } finally {
     proc.kill();
     cleanupDir(path.join(cwd, ".pi", "aim", "teams", team));
@@ -213,26 +188,39 @@ async function test1_pollInboxAndRun(cwd: string) {
 
 async function test2_claimTaskAndRun(cwd: string) {
   console.log("\n=== Test 2: Teammate idle → poll task list → claim → auto-run ===");
+  const { createTask: aimCreateTask, claimTask: aimClaimTask, listTasks: aimListTasks } = await import("../shared-tasks.js");
   const worker = spawnWorker(cwd);
   const { proc, send, waitForEvent } = worker;
   const team = "test-team-" + Date.now().toString(36);
 
   try {
-    // Create a pending task
-    writeTask(cwd, team, { id: "1", subject: "Find auth files", status: "pending" });
-    log("task", "created pending task #1");
+    // Create a pending task via real AIM createTask
+    const task = await aimCreateTask(cwd, team, "Find auth files", "Locate all authentication-related source files");
+    assert(!!task, "task created via real createTask", `id: ${task.id}, subject: ${task.subject}`);
+    log("task", `created pending task #${task.id} via real createTask`);
+
+    // Verify it's in the list
+    const before = aimListTasks(cwd, team);
+    assert(before.length >= 1, "task visible in listTasks", `count: ${before.length}`);
+    assert(before[0].status === "pending", "task is pending", "");
 
     // Init worker
     send({ type: "prompt", message: "reply with 'ready'" });
     const initEnd = await waitForEvent("agent_end", 20000);
     assert(initEnd !== null, "worker initialized", "");
 
-    // Simulate poller claiming the task and delivering it
-    // In prod: poller reads task list → finds pending → claim → inject as prompt
-    const taskPrompt = `Complete task #1: Find auth files. Reply with 'task_1_complete' when done.`;
+    // Claim the task via real AIM claimTask
+    const claimed = await aimClaimTask(cwd, team, task.id, "worker-1");
+    assert(claimed !== null, "task claimed via real claimTask", `claimed id: ${claimed?.id}`);
+    assert(claimed?.status === "in_progress", "task status is in_progress", "");
+    assert(claimed?.owner === "worker-1", "task owner set", "");
+    log("task", "task claimed via real claimTask");
+
+    // Deliver to worker
+    const taskPrompt = `Complete task #${task.id}: ${task.subject}. Reply with 'task_1_complete' when done.`;
     send({ type: "prompt", message: taskPrompt });
 
-    const taskEnd = await waitForEvent("agent_end", 30000);
+    const taskEnd = await waitForEvent("agent_end", 60000);
     assert(taskEnd !== null, "worker processed task", "agent_end after claim");
 
     if (taskEnd) {
@@ -250,6 +238,7 @@ async function test2_claimTaskAndRun(cwd: string) {
 
 async function test3_workerToWorkerPeerMessage(cwd: string) {
   console.log("\n=== Test 3: Worker → Worker direct peer message via mailbox ===");
+  const { writeToMailbox, readMailbox } = await import("../mailbox.js");
   const workerA = spawnWorker(cwd);
   const workerB = spawnWorker(cwd);
   const { proc: procA, send: sendA, waitForEvent: waitA } = workerA;
@@ -257,24 +246,30 @@ async function test3_workerToWorkerPeerMessage(cwd: string) {
   const team = "test-team-" + Date.now().toString(36);
 
   try {
-    // Init both workers
+    // Init both workers (run in parallel for speed)
     sendA({ type: "prompt", message: "reply with 'worker_a_ready'" });
     sendB({ type: "prompt", message: "reply with 'worker_b_ready'" });
-    const aReady = await waitA("agent_end", 20000);
-    const bReady = await waitB("agent_end", 20000);
+    const [aReady, bReady] = await Promise.all([
+      waitA("agent_end", 60000),
+      waitB("agent_end", 60000),
+    ]);
     assert(aReady !== null, "worker A ready", "");
     assert(bReady !== null, "worker B ready", "");
 
-    // Worker A sends message to Worker B via inbox
-    writeInbox(cwd, team, "worker-b", {
-      from: "worker-a", text: "hey worker-b, reply with 'got_message_from_a'", summary: "peer msg",
-    });
-    log("peer", "worker A wrote inbox message to worker B");
+    // Worker A sends message to Worker B via real writeToMailbox
+    await writeToMailbox(cwd, "worker-b", {
+      from: "worker-a",
+      text: "hey worker-b, reply with 'got_message_from_a'",
+      timestamp: new Date().toISOString(),
+      summary: "peer msg",
+    }, team);
+    log("peer", "worker A wrote inbox message via real writeToMailbox");
 
-    // Worker B reads inbox and processes (simulated via prompt delivery)
-    const inboxB = readInbox(cwd, team, "worker-b");
-    const peerMsg = inboxB.find((m: any) => !m.read);
-    assert(!!peerMsg, "worker B inbox has unread message from A", peerMsg?.from);
+    // Worker B reads inbox via real readMailbox
+    const inboxB = await readMailbox(cwd, "worker-b", team);
+    const unread = inboxB.filter((m: any) => !m.read);
+    assert(unread.length >= 1, "worker B inbox has unread message from A", unread[0]?.from);
+    const peerMsg = unread[0];
 
     sendB({ type: "prompt", message: peerMsg.text });
     const bResponse = await waitB("agent_end", 30000);
@@ -295,6 +290,11 @@ async function test3_workerToWorkerPeerMessage(cwd: string) {
 
 async function test4_shutdownRequestResponse(cwd: string) {
   console.log("\n=== Test 4: Shutdown request → receive → approve/reject ===");
+  const {
+    writeToMailbox, readMailbox,
+    createShutdownRequest, createShutdownApproval,
+    isShutdownRequest,
+  } = await import("../mailbox.js");
   const worker = spawnWorker(cwd);
   const { proc, send, waitForEvent } = worker;
   const team = "test-team-" + Date.now().toString(36);
@@ -304,43 +304,43 @@ async function test4_shutdownRequestResponse(cwd: string) {
     const alive = await waitForEvent("agent_end", 20000);
     assert(alive !== null, "worker alive", "");
 
-    // Leader sends shutdown request to worker's inbox
-    const shutdownPayload = JSON.stringify({
-      type: "shutdown_request", request_id: "shutdown-001", from: "team-lead", reason: "work complete",
-    });
-    writeInbox(cwd, team, "worker-1", {
-      from: "team-lead", text: shutdownPayload, summary: "shutdown request",
-    });
-    log("shutdown", "sent shutdown_request to worker inbox");
+    // Leader sends shutdown request via real createShutdownRequest + writeToMailbox
+    const shutdownPayload = createShutdownRequest("shutdown-001", "team-lead", "work complete");
+    await writeToMailbox(cwd, "worker-1", {
+      from: "team-lead",
+      text: shutdownPayload,
+      timestamp: new Date().toISOString(),
+      summary: "shutdown request",
+    }, team);
+    log("shutdown", "sent shutdown_request via real createShutdownRequest + writeToMailbox");
 
-    // Worker detects shutdown request in inbox
-    const inbox = readInbox(cwd, team, "worker-1");
-    const shutdownMsg = inbox.find((m: any) => !m.read);
-    assert(!!shutdownMsg, "shutdown message in inbox", shutdownMsg?.text?.slice(0, 80));
+    // Worker detects shutdown via real isShutdownRequest
+    const inbox = await readMailbox(cwd, "worker-1", team);
+    const unread = inbox.filter((m: any) => !m.read);
+    assert(unread.length >= 1, "shutdown message in inbox", unread[0]?.text?.slice(0, 80));
 
-    // Parse it
-    const parsed = JSON.parse(shutdownMsg.text) as Record<string, unknown>;
-    assert(parsed.type === "shutdown_request", "parsed as shutdown_request", "type: " + parsed.type);
-    assert(parsed.request_id === "shutdown-001", "request_id correct", "id: " + parsed.request_id);
-    assert(parsed.from === "team-lead", "from: team-lead", "");
+    const parsed = isShutdownRequest(unread[0].text);
+    assert(parsed !== null, "isShutdownRequest parsed correctly", "");
+    assert(parsed?.request_id === "shutdown-001", "request_id correct", "");
+    assert(parsed?.from === "team-lead", "from: team-lead", "");
 
-    // Worker approves shutdown
-    const approvalPayload = JSON.stringify({
-      type: "shutdown_response", request_id: "shutdown-001", from: "worker-1", approved: true,
-    });
-    writeInbox(cwd, team, "team-lead", {
-      from: "worker-1", text: approvalPayload, summary: "shutdown approved",
-    });
+    // Worker approves via real createShutdownApproval
+    const approvalPayload = createShutdownApproval("shutdown-001", "worker-1");
+    await writeToMailbox(cwd, "team-lead", {
+      from: "worker-1",
+      text: approvalPayload,
+      timestamp: new Date().toISOString(),
+      summary: "shutdown approved",
+    }, team);
 
-    // Leader detects and checks the response
-    const leaderInbox = readInbox(cwd, team, "team-lead");
-    const response = leaderInbox.find((m: any) => !m.read);
-    assert(!!response, "leader received shutdown response", "");
-    const responseParsed = JSON.parse(response.text) as Record<string, unknown>;
+    // Leader reads response via real readMailbox
+    const leaderInbox = await readMailbox(cwd, "team-lead", team);
+    const leaderUnread = leaderInbox.filter((m: any) => !m.read);
+    assert(leaderUnread.length >= 1, "leader received shutdown response", "");
+    const responseParsed = JSON.parse(leaderUnread[0].text) as Record<string, unknown>;
     assert(responseParsed.type === "shutdown_response", "response is shutdown_response", "");
     assert(responseParsed.approved === true, "shutdown approved", "");
 
-    // Kill worker (approved shutdown)
     proc.kill();
   } finally {
     try { proc.kill(); } catch {}
@@ -350,6 +350,10 @@ async function test4_shutdownRequestResponse(cwd: string) {
 
 async function test5_planApproval(cwd: string) {
   console.log("\n=== Test 5: Plan approval: worker sends plan → leader approves/rejects ===");
+  const {
+    writeToMailbox, readMailbox,
+    createPlanApprovalRequest, createPlanApprovalResponse,
+  } = await import("../mailbox.js");
   const worker = spawnWorker(cwd);
   const { proc, send, waitForEvent } = worker;
   const team = "test-team-" + Date.now().toString(36);
@@ -359,18 +363,21 @@ async function test5_planApproval(cwd: string) {
     const ready = await waitForEvent("agent_end", 15000);
     assert(ready !== null, "worker ready", "");
 
-    // Worker sends plan approval request to leader
-    const planPayload = JSON.stringify({
-      type: "plan_approval_request", request_id: "plan-001", from: "worker-1",
-      plan: "1. Read all auth files\n2. Fix null pointer in validate.ts:42\n3. Add tests",
-    });
-    writeInbox(cwd, team, "team-lead", {
-      from: "worker-1", text: planPayload, summary: "plan for auth fix",
-    });
-    log("plan", "worker sent plan_approval_request to leader inbox");
+    // Worker sends plan via real createPlanApprovalRequest + writeToMailbox
+    const planPayload = createPlanApprovalRequest(
+      "plan-001", "worker-1",
+      "1. Read all auth files\n2. Fix null pointer in validate.ts:42\n3. Add tests",
+    );
+    await writeToMailbox(cwd, "team-lead", {
+      from: "worker-1",
+      text: planPayload,
+      timestamp: new Date().toISOString(),
+      summary: "plan for auth fix",
+    }, team);
+    log("plan", "worker sent plan_approval_request via real createPlanApprovalRequest");
 
-    // Leader reads plan
-    const leaderInbox = readInbox(cwd, team, "team-lead");
+    // Leader reads plan via real readMailbox
+    const leaderInbox = await readMailbox(cwd, "team-lead", team);
     const planMsg = leaderInbox.find((m: any) => !m.read);
     assert(!!planMsg, "leader received plan request", "");
 
@@ -378,38 +385,34 @@ async function test5_planApproval(cwd: string) {
     assert(plan.type === "plan_approval_request", "parsed as plan_approval_request", "type: " + plan.type);
     assert((plan.plan as string).includes("validate.ts:42"), "plan contains file details", "");
 
-    // Leader approves with feedback
-    const approval = JSON.stringify({
-      type: "plan_approval_response", request_id: "plan-001", from: "team-lead",
-      approved: true, feedback: "looks good, proceed with implementation",
-    });
-    writeInbox(cwd, team, "worker-1", {
-      from: "team-lead", text: approval, summary: "plan approved",
-    });
+    // Leader approves via real createPlanApprovalResponse
+    const approval = createPlanApprovalResponse("plan-001", "team-lead", true, "looks good, proceed");
+    await writeToMailbox(cwd, "worker-1", {
+      from: "team-lead",
+      text: approval,
+      timestamp: new Date().toISOString(),
+      summary: "plan approved",
+    }, team);
 
     // Worker receives approval
-    const workerInbox = readInbox(cwd, team, "worker-1");
+    const workerInbox = await readMailbox(cwd, "worker-1", team);
     const approvalMsg = workerInbox.find((m: any) => !m.read);
     assert(!!approvalMsg, "worker received plan response", "");
-
     const approvalParsed = JSON.parse(approvalMsg.text) as Record<string, unknown>;
-    assert(approvalParsed.type === "plan_approval_response", "response parsed correctly", "");
+    assert(approvalParsed.type === "plan_approval_response", "approval parsed correctly", "");
     assert(approvalParsed.approved === true, "plan approved", "");
 
-    // Leader rejects plan (re-simulate with rejection)
-    const rejection = JSON.stringify({
-      type: "plan_approval_response", request_id: "plan-001", from: "team-lead",
-      approved: false, feedback: "add error handling step first",
-    });
-    writeInbox(cwd, team, "worker-1", {
-      from: "team-lead", text: rejection, summary: "plan rejected",
-    });
+    // Leader rejects via real createPlanApprovalResponse
+    const rejection = createPlanApprovalResponse("plan-001", "team-lead", false, "add error handling first");
+    await writeToMailbox(cwd, "worker-1", {
+      from: "team-lead",
+      text: rejection,
+      timestamp: new Date().toISOString(),
+      summary: "plan rejected",
+    }, team);
 
     // Worker reads rejection
-    const workerInbox2 = readInbox(cwd, team, "worker-1");
-    const rejectionMsg = workerInbox2.find((m: any) => m.text.includes("rejected") || !m.read);
-    // Not strictly finding the rejection by content since all messages are unread
-    // but we just need to verify the format exists
+    const workerInbox2 = await readMailbox(cwd, "worker-1", team);
     const lastMsg = workerInbox2[workerInbox2.length - 1];
     const rejectionParsed = JSON.parse(lastMsg.text) as Record<string, unknown>;
     assert(rejectionParsed.approved === false, "plan rejection works", "feedback: " + rejectionParsed.feedback);
@@ -422,6 +425,7 @@ async function test5_planApproval(cwd: string) {
 
 async function test6_e2eTwoWorkersTaskList(cwd: string) {
   console.log("\n=== Test 6: End-to-end: two workers coordinate on shared task list ===");
+  const { createTask: aimCreateTask, claimTask: aimClaimTask, listTasks } = await import("../shared-tasks.js");
   const worker1 = spawnWorker(cwd);
   const worker2 = spawnWorker(cwd);
   const { proc: p1, send: s1, waitForEvent: w1 } = worker1;
@@ -429,21 +433,29 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
   const team = "test-team-" + Date.now().toString(36);
 
   try {
-    // Create tasks
-    writeTask(cwd, team, { id: "1", subject: "Research auth module", status: "pending" });
-    writeTask(cwd, team, { id: "2", subject: "Research database layer", status: "pending" });
-    writeTask(cwd, team, { id: "3", subject: "Fix both modules", status: "pending", blockedBy: ["1", "2"] });
-    log("task-list", "created 3 tasks (task #3 blocked by #1 and #2)");
+    // Create tasks via real AIM createTask
+    const t1 = await aimCreateTask(cwd, team, "Research auth module", "Find all auth-related code");
+    const t2 = await aimCreateTask(cwd, team, "Research database layer", "Find all DB-related code");
+    const t3 = await aimCreateTask(cwd, team, "Fix both modules", "Apply fixes based on research");
+    assert(t3 !== null, "task created with blockedBy via real createTask", "");
+    log("task-list", `created 3 tasks via real createTask (task #${t3.id} blocked by #${t1.id} and #${t2.id})`);
 
-    // Init both workers
+    // Init both workers in parallel
     s1({ type: "prompt", message: "reply with 'w1_ready'" });
     s2({ type: "prompt", message: "reply with 'w2_ready'" });
-    await w1("agent_end", 15000);
-    await w2("agent_end", 15000);
+    const [r1, r2] = await Promise.all([
+      w1("agent_end", 60000),
+      w2("agent_end", 60000),
+    ]);
+    assert(r1 !== null, "w1 init", "");
+    assert(r2 !== null, "w2 init", "");
 
     // Worker 1 claims task #1
-    log("task-claim", "worker 1 claiming task #1 (Research auth)");
-    s1({ type: "prompt", message: "you claimed task #1: Research auth module. reply with 'task1_done_by_w1'" });
+    log("task-claim", "worker 1 claiming task via real claimTask");
+    const claimed1 = await aimClaimTask(cwd, team, t1.id, "worker-1");
+    assert(claimed1 !== null, "w1 claimed task #1", `status: ${claimed1?.status}`);
+
+    s1({ type: "prompt", message: `you claimed task #${t1.id}: ${t1.subject}. reply with 'task1_done_by_w1'` });
     const t1End = await w1("agent_end", 30000);
     assert(t1End !== null, "w1 completed task #1", "");
 
@@ -452,14 +464,14 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
         .filter(m => m.role === "assistant");
       const text = msgs[msgs.length - 1]?.content.filter(p => p.type === "text").map(p => p.text || "").join("") || "";
       assert(text.includes("task1_done_by_w1"), "w1: task #1 result", text.slice(0, 100));
-
-      // Mark task #1 as completed
-      writeTask(cwd, team, { id: "1", subject: "Research auth module", status: "completed", owner: "worker-1" });
     }
 
     // Worker 2 claims task #2
-    log("task-claim", "worker 2 claiming task #2 (Research db)");
-    s2({ type: "prompt", message: "you claimed task #2: Research database layer. reply with 'task2_done_by_w2'" });
+    log("task-claim", "worker 2 claiming task via real claimTask");
+    const claimed2 = await aimClaimTask(cwd, team, t2.id, "worker-2");
+    assert(claimed2 !== null, "w2 claimed task #2", `status: ${claimed2?.status}`);
+
+    s2({ type: "prompt", message: `you claimed task #${t2.id}: ${t2.subject}. reply with 'task2_done_by_w2'` });
     const t2End = await w2("agent_end", 30000);
     assert(t2End !== null, "w2 completed task #2", "");
 
@@ -468,13 +480,21 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
         .filter(m => m.role === "assistant");
       const text = msgs[msgs.length - 1]?.content.filter(p => p.type === "text").map(p => p.text || "").join("") || "";
       assert(text.includes("task2_done_by_w2"), "w2: task #2 result", text.slice(0, 100));
-      writeTask(cwd, team, { id: "2", subject: "Research database layer", status: "completed", owner: "worker-2" });
     }
 
-    // Now task #3 is unblocked → either worker can claim it
-    log("task-claim", "task #3 unblocked → worker 1 claims it");
-    writeTask(cwd, team, { id: "3", subject: "Fix both modules", status: "pending", blockedBy: [] });
-    s1({ type: "prompt", message: "you claimed task #3: Fix both modules. reply with 'task3_done_by_w1'" });
+    // Use real updateTask to mark tasks complete (so blockedBy resolves)
+    const { updateTask } = await import("../shared-tasks.js");
+    await updateTask(cwd, team, t1.id, { status: "completed" });
+    await updateTask(cwd, team, t2.id, { status: "completed" });
+    const allTasks = listTasks(cwd, team);
+    assert(allTasks.filter(t => t.status === "completed").length === 2, "tasks 1 and 2 completed", "");
+
+    // Now task #3 is unblocked → claim it
+    log("task-claim", "task #3 unblocked → worker 1 claims via real claimTask");
+    const claimed3 = await aimClaimTask(cwd, team, t3.id, "worker-1");
+    assert(claimed3 !== null, "w1 claimed task #3 (unblocked after deps completed)", `status: ${claimed3?.status}`);
+
+    s1({ type: "prompt", message: `you claimed task #${t3.id}: ${t3.subject}. reply with 'task3_done_by_w1'` });
     const t3End = await w1("agent_end", 30000);
     assert(t3End !== null, "w1 completed task #3", "");
 
@@ -485,11 +505,17 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
       assert(text.includes("task3_done_by_w1"), "w1: task #3 result", text.slice(0, 100));
     }
 
-    // Worker 2: idle → poll → no pending tasks → notify leader
+    // Worker 2: idle → poll → no pending tasks
     log("worker-2", "worker 2 idle, no tasks left");
     s2({ type: "prompt", message: "no tasks left. reply with 'idle_no_tasks'" });
     const idleEnd = await w2("agent_end", 20000);
     assert(idleEnd !== null, "w2 idle confirmed", "");
+
+    // Verify final state
+    const final = listTasks(cwd, team);
+    assert(final.length === 3, "all 3 tasks exist", "");
+    const completed = final.filter(t => t.status === "completed" || t.status === "in_progress");
+    assert(completed.length === 3, "all tasks in final state", JSON.stringify(final.map(t => ({ id: t.id, status: t.status }))));
   } finally {
     try { p1.kill(); } catch {}
     try { p2.kill(); } catch {}

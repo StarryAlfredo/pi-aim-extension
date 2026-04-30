@@ -105,6 +105,7 @@ aim/
 ├── permissions.ts     ← Permission bridge: intercept dangerous bash commands, request user confirmation
 ├── render.ts          ← TUI rendering: tool call/result components, usage stats formatting
 ├── agents.ts          ← Agent definition loader: parse .md frontmatter, discover user/project agents
+├── shared-tasks.ts    ← Team shared task system: file-based CRUD, claim/unclaim, lock-safe
 └── test/              ← Test suite (see test/README.md for details)
 ```
 
@@ -125,6 +126,20 @@ aim/
 | Coordinator mode | `pi.appendEntry()` | Session JSONL |
 
 ## Change Log
+
+### 2026-04-30
+- **Fix: test determinism** — P1 tests now use `--no-tools --thinking off` for RPC workers
+  to prevent non-deterministic tool-use responses. P1 test4 now uses real AIM modules
+  (`writeToMailbox`, `readMailbox`, `markMessageAsRead`) from `mailbox.ts`.
+- **Fix: test coverage** — P2 tests rewritten to call real AIM modules (`mailbox.ts`,
+  `shared-tasks.ts`) instead of bypassing them with direct file system access.
+  Tests now cover: `writeToMailbox`, `readMailbox`, `markMessageAsRead`, `createTask`,
+  `claimTask`, `updateTask`, `listTasks`, `createShutdownRequest`, `isShutdownRequest`,
+  `createShutdownApproval`, `createPlanApprovalRequest`, `createPlanApprovalResponse`.
+- **Fix: pi CLI path** — Removed hardcoded `D:\nodeJS\pi.cmd` and `APPDATA/npm/pi.cmd`
+  paths; now uses `pi.cmd` from PATH.
+- **Fix: worker init flakiness** — Increased timeout for worker initialization to 60s;
+  parallelized two-worker init in test3 and test6 with `Promise.all`.
 
 ### 2026-04-29 (P1)
 - **P1: agent_end completion signal** — RPC workers now use agent_end to signal completion

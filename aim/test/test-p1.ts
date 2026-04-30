@@ -47,9 +47,9 @@ function spawnRpcWorker(cwd: string, model?: string): {
   /** Stop watching events */
   stop(): void;
 } {
-  const args: string[] = ["--mode", "rpc", "--no-session", "--model", model ?? "zai/glm-5.1"];
+  const args: string[] = ["--mode", "rpc", "--no-session", "--no-tools", "--thinking", "off", "--model", model ?? "zai/glm-5.1"];
   const piCmd = process.platform === "win32"
-    ? ["cmd", "/c", "D:\\nodeJS\\pi.cmd"]
+    ? ["cmd", "/c", "pi.cmd"]
     : ["pi"];
   const proc = spawn(piCmd[0], [...piCmd.slice(1), ...args], {
     cwd,
@@ -234,20 +234,45 @@ async function test4_mailboxToRpcSteer(cwd: string) {
   console.log("\n=== Test 4: Leader → Worker message pipe (mailbox → RPC steer) ===");
   const worker = spawnRpcWorker(cwd);
   const { proc, send, waitForEvent } = worker;
+  const team = "test-team-" + Date.now().toString(36);
 
   try {
-    send({ type: "prompt", message: "you are about to be steered, reply with 'ready'" });
+    // Phase 1: Establish worker is ready
+    send({ type: "prompt", message: "reply with 'ready'" });
+    const initEnd = await waitForEvent("agent_end", 20000);
+    assert(initEnd !== null, "worker initialized", "");
 
-    // Wait for prompt to start processing, then steer
-    await new Promise(r => setTimeout(r, 2000));
-    log("mailbox→steer", "converting mailbox message to RPC steer");
-    send({ type: "steer", message: "new instruction from leader's mailbox: reply with only 'mailbox_steered'" });
+    // Phase 2: Use the real AIM mailbox module to write a message
+    // This tests the actual code path: writeToMailbox → file system → readMailbox
+    const { writeToMailbox, readMailbox } = await import("../mailbox.js");
+    const agentName = "worker-1";
 
-    const agentEnd = await waitForEvent("agent_end", 30000);
-    assert(agentEnd !== null, "agent_end received", "mailbox routed message completed");
+    await writeToMailbox(cwd, agentName, {
+      from: "team-lead",
+      text: "reply with only 'mailbox_steered'",
+      timestamp: new Date().toISOString(),
+      summary: "task from leader",
+    }, team);
+    log("mailbox", "wrote message via writeToMailbox (real AIM module)");
 
-    if (agentEnd) {
-      const assistantMsgs = (agentEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>)
+    // Phase 3: Read back via real readMailbox (same as poller would do)
+    const inboxMessages = await readMailbox(cwd, agentName, team);
+    assert(inboxMessages.length >= 1, "mailbox message persisted", `count: ${inboxMessages.length}`);
+    const unread = inboxMessages.filter(m => !m.read);
+    assert(unread.length >= 1, "message is unread", "");
+
+    const msg = unread[0];
+    assert(msg.from === "team-lead", "from field preserved", `from: ${msg.from}`);
+    assert(msg.text.includes("mailbox_steered"), "text preserved", msg.text);
+
+    // Phase 4: Inject the message into the worker (simulating poller delivery)
+    // Real poller would call steer/followUp; here we use prompt for deterministic testing
+    send({ type: "prompt", message: msg.text });
+    const taskEnd = await waitForEvent("agent_end", 30000);
+    assert(taskEnd !== null, "worker processed mailbox message", "agent_end after mailbox delivery");
+
+    if (taskEnd) {
+      const assistantMsgs = (taskEnd.messages as Array<{ role: string; content: Array<{ type: string; text?: string }> }>)
         .filter(m => m.role === "assistant");
       const finalText = assistantMsgs[assistantMsgs.length - 1]?.content
         .filter(p => p.type === "text")
@@ -258,9 +283,18 @@ async function test4_mailboxToRpcSteer(cwd: string) {
         "mailbox→RPC steer works",
         `reply: ${finalText.slice(0, 100)}`,
       );
+
+      // Phase 5: Mark as read via real markMessageAsRead
+      const { markMessageAsRead } = await import("../mailbox.js");
+      await markMessageAsRead(cwd, agentName, team, 0);
+      const afterMark = await readMailbox(cwd, agentName, team);
+      assert(afterMark[0]?.read === true, "message marked as read", "");
     }
   } finally {
     proc.kill();
+    // Cleanup
+    const p1 = path.join(cwd, ".pi", "aim", "teams", team);
+    if (fs.existsSync(p1)) try { fs.rmSync(p1, { recursive: true, force: true }); } catch {}
   }
 }
 
