@@ -410,7 +410,6 @@ export default function (pi: ExtensionAPI) {
       const scope: AgentScope = params.agentScope ?? "user";
       const { agents } = discoverAgents(ctx.cwd, scope);
       const cwd = ctx.cwd;
-      console.error("[AIM DEBUG] subagent execute:", { scope, agentsCount: agents.length, agentNames: agents.map(a => a.name), cwd });
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;

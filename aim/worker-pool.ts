@@ -109,13 +109,11 @@ export class WorkerPool {
     if (config.model) args.push("--model", config.model);
     if (config.tools?.length) args.push("--tools", config.tools.join(","));
     if (config.forkFrom) args.push("--session", config.forkFrom);
-    if (config.systemPrompt) args.push("--system-prompt", config.systemPrompt);
 
     // For print mode: prompt is the last positional arg
     if (!isRpc) args.push(config.prompt);
 
     const piCmd = getPiCommand();
-    console.error("[AIM DEBUG] Spawning worker:", { name: config.name, command: piCmd.command, cwd: config.cwd, isRpc, tools: config.tools, hasModel: !!config.model, hasSystemPrompt: !!config.systemPrompt });
     const proc = spawn(piCmd.command, [...piCmd.args, ...args], {
       cwd: config.cwd ?? process.cwd(),
       stdio: isRpc ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
