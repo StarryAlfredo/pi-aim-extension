@@ -45,6 +45,7 @@ import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { discoverAgents, type AgentConfig, type AgentScope } from "./agents.js";
 import { registerSendMessage } from "./send-message.js";
 import { registerCoordinator } from "./coordinator.js";
+import { createWorktree, removeWorktreeByBase } from "./worktree.js";
 import { registerTeams } from "./teams.js";
 import { registerPermissions } from "./permissions.js";
 import { getDisplayItems, getFinalOutput, formatToolCall, formatUsageStats, renderSubagentResult } from "./render.js";
@@ -238,29 +239,31 @@ async function runSingleAgent(
 
   // Decide mode: fork or background → RPC; simple sync → print
   const useRpc = params.fork || params.background;
-  const agentId = useRpc ? `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` : undefined;
 
-  // Persist metadata for RPC agents (enable resume)
-  if (agentId) {
-    writeAgentMetadata(cwd, agentId, {
-      agentType: agentDef.name, name: params.agent, task: params.task,
-      model: params.model ?? agentDef.model,
-      tools: params.tools ?? agentDef.tools,
-      forkMode: params.fork ?? false,
-      background: params.background ?? false,
-      createdAt: Date.now(),
-    });
+  // Generate agentId for ALL non-resume agents (not just RPC ones).
+  // This enables worktree isolation and transcript storage.
+  const agentId = params.resumeAgentId ??
+    `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-    // Record spawn in parent tree
-    recordSubagentSpawn(pi, {
-      agentId, agent: params.agent, task: params.task,
-      model: params.model ?? agentDef.model,
-      tools: params.tools ?? agentDef.tools,
-      background: params.background ?? false,
-      forkMode: params.fork ?? false,
-      transcriptFile: `.pi/aim/agents/${agentId}.jsonl`,
-    });
-  }
+  // Persist metadata (enable resume, auditing)
+  writeAgentMetadata(cwd, agentId, {
+    agentType: agentDef.name, name: params.agent, task: params.task,
+    model: params.model ?? agentDef.model,
+    tools: params.tools ?? agentDef.tools,
+    forkMode: params.fork ?? false,
+    background: params.background ?? false,
+    createdAt: Date.now(),
+  });
+
+  // Record spawn in parent tree
+  recordSubagentSpawn(pi, {
+    agentId, agent: params.agent, task: params.task,
+    model: params.model ?? agentDef.model,
+    tools: params.tools ?? agentDef.tools,
+    background: params.background ?? false,
+    forkMode: params.fork ?? false,
+    transcriptFile: `.pi/aim/agents/${agentId}.jsonl`,
+  });
 
   const model = params.model ?? agentDef.model;
   const tools = params.tools ?? agentDef.tools;
@@ -277,10 +280,19 @@ async function runSingleAgent(
     systemPrompt = agentDef.systemPrompt;
   }
 
+  // =======================================================================
+  // Worktree isolation: create a git worktree copy of the project and
+  // run the agent inside it. This prevents file conflicts between
+  // concurrent agents and protects the main working directory.
+  // =======================================================================
+  const wt = createWorktree(cwd, agentId);
+  const wtBaseDir: string | null = wt?.baseDir ?? null;
+  const effectiveCwd = wt?.effectiveCwd ?? (params.cwd ?? cwd);
+
   const workerId = workerPool.spawn({
     name: params.agent, prompt: params.task,
     model, tools,
-    cwd: params.cwd ?? cwd,
+    cwd: effectiveCwd,
     background: params.background ?? false,
     systemPrompt,
     rpcMode: useRpc,
@@ -312,14 +324,12 @@ async function runSingleAgent(
     const stopReason = lastAssistant?.stopReason as string | undefined;
     const errorMsg = lastAssistant?.errorMessage as string | undefined;
 
-    // Persist transcript for RPC agents
-    if (agentId) {
-      appendToTranscript(cwd, agentId, result.messages);
-      recordSubagentResult(pi, {
-        agentId, status: result.exitCode === 0 ? "completed" : "failed",
-        summary: finalOutput.slice(0, 200), usage, exitCode: result.exitCode ?? 1, model,
-      });
-    }
+    // Persist transcript
+    appendToTranscript(cwd, agentId, result.messages);
+    recordSubagentResult(pi, {
+      agentId, status: result.exitCode === 0 ? "completed" : "failed",
+      summary: finalOutput.slice(0, 200), usage, exitCode: result.exitCode ?? 1, model,
+    });
 
     onUpdate?.({ agent: params.agent, status: result.exitCode === 0 ? "completed" : "error", output: finalOutput });
 
@@ -336,6 +346,11 @@ async function runSingleAgent(
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
       agentId, resumed: false,
     };
+  } finally {
+    // Always clean up worktree after agent completes
+    if (wtBaseDir) {
+      removeWorktreeByBase(cwd, wtBaseDir);
+    }
   }
 }
 
@@ -382,6 +397,12 @@ const SubagentParams = Type.Object({
 // ============================================================================
 
 export default function (pi: ExtensionAPI) {
+
+  // Clean up stale worktrees from previous crashed sessions
+  // (runs once on extension init — see worktree.ts)
+  import("./worktree.js").then(({ cleanupStaleWorktrees }) => {
+    try { cleanupStaleWorktrees(process.cwd()); } catch {}
+  });
 
   // ========== SUBAGENT TOOL ==========
 
