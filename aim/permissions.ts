@@ -1,17 +1,13 @@
 /**
  * AIM — Permission Bridge
  *
- * Intercepts tool calls from subagents and requests user confirmation
- * for dangerous operations. Acts as a lightweight "permission gate"
- * between child agents and the user.
- *
- * Follows Claude Code's leaderPermissionBridge pattern:
- *   - Includes agent identity in confirmation dialogs
- *   - Auto-denies in headless mode
+ * Lightweight permission gate for dangerous bash commands.
+ * Since pi doesn't have a built-in permission system, this uses
+ * ctx.ui.confirm() for interactive approval. In headless mode
+ * (print/RPC without UI), dangerous commands are auto-denied.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { getActiveTeam } from "./teams.js";
 
 // ============================================================================
 // Dangerous Patterns
@@ -25,7 +21,7 @@ const DANGEROUS_COMMANDS = [
   /^chown\b/,
   /^dd\s+if=/,
   /^mkfs\./,
-  /^:\(\)\s*\{.*\}\s*;:/,
+  /^:\(\)\s*\{.*\}\s*;:/,  // fork bomb
   />\s*\/dev\/sd[a-z]/,
   /curl.*\|\s*(ba)?sh/,
   /wget.*\|\s*(ba)?sh/,
@@ -37,14 +33,6 @@ const WARN_COMMANDS = [
   /^npm\s+publish\b/,
   /^docker\s+(rm|rmi|system\s+prune)/,
 ];
-
-export function isDangerous(command: string): RegExp | null {
-  return DANGEROUS_COMMANDS.find((p) => p.test(command)) ?? null;
-}
-
-export function isWarning(command: string): boolean {
-  return WARN_COMMANDS.some((p) => p.test(command));
-}
 
 // ============================================================================
 // Registration
