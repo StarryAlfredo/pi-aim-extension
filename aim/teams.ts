@@ -20,6 +20,7 @@ import type { TeamFile, TeamMember, SpawnTeammateConfig } from "./types.js";
 import { getTeamsDir, getTasksDir, type AgentConfig } from "./types.js";
 import { writeToMailbox } from "./mailbox.js";
 import { workerPool } from "./worker-pool.js";
+import { runTeammateLoop } from "./teammate-loop.js";
 
 // ============================================================================
 // Module State
@@ -142,6 +143,13 @@ export async function spawnTeammate(
     timestamp: new Date().toISOString(),
     summary: config.description ?? `Task for ${config.name}`,
   }, teamName);
+
+  // Start autonomous poll loop — teammate will read inbox and claim tasks
+  // on its own, without coordinator pushing prompts.
+  const loopSignal = new AbortController();
+  runTeammateLoop({
+    cwd: config.cwd ?? cwd, agentName: config.name, teamName, workerId, signal: loopSignal.signal,
+  }).catch(() => {}); // fire-and-forget, runs until shutdown
 
   return { agentId: workerId, name: config.name, team: teamName };
 }
