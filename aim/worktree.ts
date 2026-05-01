@@ -55,6 +55,7 @@ export function createWorktree(cwd: string, agentId: string): { effectiveCwd: st
       effectiveCwd: relativePath ? path.join(worktreeDir, relativePath) : worktreeDir,
       baseDir: worktreeDir,
     };
+  } catch (err) {
     // If worktree already exists (leftover from crash), force remove and retry once
     try {
       execSync(`git worktree remove --force ${gitPath}`, { cwd, stdio: "pipe" });

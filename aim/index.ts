@@ -266,7 +266,16 @@ async function runSingleAgent(
   });
 
   const model = params.model ?? agentDef.model;
-  const tools = params.tools ?? agentDef.tools;
+  const declaredTools = params.tools ?? agentDef.tools ?? [];
+
+  // Apply role-based tool filtering (infrastructure-level enforcement).
+  // Workers cannot re-delegate via subagent/send_message; teammates get
+  // collaboration tools force-injected; coordinators get exclusive set.
+  // This runs regardless of what the agent definition declares.
+  const { getRoleTools, resolveRole } = await import("./permission-matrix.js");
+  const isTeammate = (params as Record<string, unknown>).team_name !== undefined;
+  const role = resolveRole({ isTeammate, isFork: params.fork });
+  const tools = getRoleTools(role, declaredTools);
 
   // Build system prompt for fork mode: append agent's system prompt
   let systemPrompt: string | undefined;

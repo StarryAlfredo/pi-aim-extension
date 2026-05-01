@@ -5,20 +5,18 @@
  * for dangerous operations. Acts as a lightweight "permission gate"
  * between child agents and the user.
  *
- * Since Pi doesn't have a built-in permission system (by design), this
- * bridge uses ctx.ui.confirm() to ask the user for approval.
- *
- * Also handles fallback: if UI is not available (print/RPC mode),
- * auto-denies dangerous operations.
+ * Follows Claude Code's leaderPermissionBridge pattern:
+ *   - Includes agent identity in confirmation dialogs
+ *   - Auto-denies in headless mode
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { getActiveTeam } from "./teams.js";
 
 // ============================================================================
 // Dangerous Patterns
 // ============================================================================
 
-/** Commands that should always trigger a confirmation */
 const DANGEROUS_COMMANDS = [
   /^rm\s+-rf\b/,
   /^rm\s+-r\b/,
@@ -27,19 +25,26 @@ const DANGEROUS_COMMANDS = [
   /^chown\b/,
   /^dd\s+if=/,
   /^mkfs\./,
-  /^:\(\)\s*\{.*\}\s*;:/,  // fork bomb
+  /^:\(\)\s*\{.*\}\s*;:/,
   />\s*\/dev\/sd[a-z]/,
   /curl.*\|\s*(ba)?sh/,
   /wget.*\|\s*(ba)?sh/,
 ];
 
-/** Commands that trigger a warning but are not blocked */
 const WARN_COMMANDS = [
   /^git\s+push\s+--force/,
   /^git\s+reset\s+--hard/,
   /^npm\s+publish\b/,
   /^docker\s+(rm|rmi|system\s+prune)/,
 ];
+
+export function isDangerous(command: string): RegExp | null {
+  return DANGEROUS_COMMANDS.find((p) => p.test(command)) ?? null;
+}
+
+export function isWarning(command: string): boolean {
+  return WARN_COMMANDS.some((p) => p.test(command));
+}
 
 // ============================================================================
 // Registration
