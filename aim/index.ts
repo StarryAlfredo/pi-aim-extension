@@ -48,6 +48,7 @@ import { registerCoordinator } from "./coordinator.js";
 import { createWorktree, removeWorktreeByBase } from "./worktree.js";
 import { registerTeams } from "./teams.js";
 import { registerPermissions } from "./permissions.js";
+import { registerSwarm } from "./swarm.js";
 import { getDisplayItems, getFinalOutput, formatToolCall, formatUsageStats, renderSubagentResult } from "./render.js";
 import {
   writeAgentMetadata, readAgentMetadata, readTranscript, appendToTranscript,
@@ -716,4 +717,5 @@ export default function (pi: ExtensionAPI) {
   registerCoordinator(pi);
   registerTeams(pi);
   registerPermissions(pi);
+  registerSwarm(pi);
 }
