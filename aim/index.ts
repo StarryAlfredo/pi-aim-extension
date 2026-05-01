@@ -489,30 +489,80 @@ export default function (pi: ExtensionAPI) {
         );
         const ok = results.filter(r => r.exitCode === 0).length;
 
-        // Write truncated outputs to disk so coordinator can Read them
-        import("node:fs").then(fs => {
-          import("node:path").then(path => {
-            for (const r of results) {
-              const full = getFinalOutput(r.messages);
-              if (full.length > 500 && r.agentId) {
-                const dir = path.join(cwd, ".pi", "aim", "task-outputs");
-                try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-                fs.writeFileSync(path.join(dir, `${r.agentId}-output.txt`), full, "utf-8");
-              }
-            }
-          });
-        });
+        // ===========================================================================
+        // Result size handling — automatic persistence (same philosophy as Claude Code)
+        //
+        // Parallel agents produce multiple results that together can overwhelm the
+        // parent agent's context window. We auto-detect oversized results and
+        // persist them to disk, leaving a preview + file path in the inline response.
+        //
+        // Thresholds align with Claude Code's own toolResultStorage design:
+        //   PER_AGENT_INLINE_LIMIT  = 50,000 chars (tool-level, before persistence)
+        //   PER_AGENT_PREVIEW_BYTES =  2,000 chars (preview kept inline after persistence)
+        //   PER_MESSAGE_BUDGET      = 200,000 chars (sum of ALL inline results in one turn)
+        //
+        // The parent agent NEVER needs to choose output modes — the framework
+        // handles it transparently. If a result is truncated, the parent sees
+        // a file path and uses Read to fetch what it needs.
+        // ===========================================================================
 
-        const lines = results.map(r => {
+        const PER_AGENT_INLINE_LIMIT = 50_000;
+        const PER_AGENT_PREVIEW_BYTES = 2_000;
+        const PER_MESSAGE_BUDGET = 200_000;
+
+        // Phase 1: Persist oversized individual results to disk
+        const fs = await import("node:fs");
+        const nodePath = await import("node:path");
+        const dir = nodePath.join(cwd, ".pi", "aim", "task-outputs");
+        fs.mkdirSync(dir, { recursive: true });
+
+        for (const r of results) {
+          const full = getFinalOutput(r.messages);
+          if (full.length > PER_AGENT_INLINE_LIMIT && r.agentId) {
+            fs.writeFileSync(nodePath.join(dir, `${r.agentId}-output.txt`), full, "utf-8");
+          }
+        }
+
+        // Phase 2: Build inline display lines (with per-agent truncation)
+        let totalInlineSize = 0;
+        const lines: string[] = [];
+        for (const r of results) {
           const fullOutput = getFinalOutput(r.messages);
-          const maxLen = 500;
-          const truncated = fullOutput.length > maxLen;
-          const display = truncated ? fullOutput.slice(0, maxLen) + `\n... (truncated, ${fullOutput.length} chars total. Full output: .pi/aim/task-outputs/${r.agentId || 'unknown'}-output.txt)` : (fullOutput || "(no output)");
+          const hasDiskCopy = fullOutput.length > PER_AGENT_INLINE_LIMIT && r.agentId;
           const statusIcon = r.exitCode === 0 ? "✓" : "✗";
+
+          let display: string;
+          if (hasDiskCopy) {
+            // Large result: show preview only, point to file
+            const preview = fullOutput.slice(0, PER_AGENT_PREVIEW_BYTES);
+            display = preview + `\n... (truncated, ${fullOutput.length} chars total. Full output: .pi/aim/task-outputs/${r.agentId}-output.txt)`;
+          } else if (fullOutput.length > PER_AGENT_PREVIEW_BYTES) {
+            // Medium result: fits under persistence threshold but is still large.
+            // Keep inline (no disk copy) but show a size hint.
+            display = fullOutput.slice(0, PER_AGENT_PREVIEW_BYTES * 4) + `\n... (${fullOutput.length} chars total, inline, not persisted)`;
+          } else {
+            // Small result: full inline
+            display = fullOutput || "(no output)";
+          }
+
+          totalInlineSize += display.length;
           const errorHint = r.exitCode !== 0 ? `\n⚠️ This agent FAILED. Retry with corrected parameters. Do NOT work around it by reading project files yourself.` : "";
-          return `[${r.agent}] ${statusIcon}: ${display}${errorHint}`;
-        });
-        return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} OK\n\n${lines.join("\n\n")}\n\n⚠️ Truncated: read the output file shown. Failed: retry with a single subagent.` }], details: { mode: "parallel", results } };
+          lines.push(`[${r.agent}] ${statusIcon}: ${display}${errorHint}`);
+        }
+
+        // Phase 3: Per-message budget check — if total inline content exceeds
+        // budget, mark the entire batch as requiring file reads (but still show
+        // what we have so the coordinator can make decisions).
+        const overBudget = totalInlineSize > PER_MESSAGE_BUDGET;
+        const budgetNote = overBudget
+          ? `\n⚠️ Per-message budget (${PER_MESSAGE_BUDGET.toLocaleString()} chars) exceeded (${totalInlineSize.toLocaleString()} chars total). Consider reading individual output files for full results.`
+          : "";
+
+        const truncatedNote = lines.some(l => l.includes("(truncated"))
+          ? `\n⚠️ Some results truncated. Read the output file shown for full content.`
+          : "";
+
+        return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} OK${truncatedNote}${budgetNote}\n\n${lines.join("\n\n")}` }], details: { mode: "parallel", results } };
       }
 
       // --- Single ---
