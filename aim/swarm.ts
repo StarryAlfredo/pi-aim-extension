@@ -156,7 +156,7 @@ export function registerSwarm(pi: ExtensionAPI) {
   pi.registerCommand("swarm", {
     description: "Manage swarm team (init, add, kill, list)",
     handler: async (args, ctx) => {
-      const input = args.join(" ");
+      const input = typeof args === "string" ? args : "";
       const cmd = parseSwarmCommand("/swarm " + input);
       if (!cmd) return;
 
