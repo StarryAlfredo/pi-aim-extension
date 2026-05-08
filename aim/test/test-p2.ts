@@ -211,13 +211,13 @@ async function test2_claimTaskAndRun(cwd: string) {
 
     // Claim the task via real AIM claimTask
     const claimed = await aimClaimTask(cwd, team, task.id, "worker-1");
-    assert(claimed !== null, "task claimed via real claimTask", `claimed id: ${claimed?.id}`);
-    assert(claimed?.status === "in_progress", "task status is in_progress", "");
-    assert(claimed?.owner === "worker-1", "task owner set", "");
+    assert("task" in claimed, "task claimed via real claimTask", `claimed id: ${claimed.task?.id}`);
+    assert(claimed.task?.status === "in_progress", "task status is in_progress", "");
+    assert(claimed.task?.owner === "worker-1", "task owner set", "");
     log("task", "task claimed via real claimTask");
 
     // Deliver to worker
-    const taskPrompt = `Complete task #${task.id}: ${task.subject}. Reply with 'task_1_complete' when done.`;
+    const taskPrompt = `Complete task #${claimed.task?.id}: ${claimed.task?.subject}. Reply with 'task_1_complete' when done.`;
     send({ type: "prompt", message: taskPrompt });
 
     const taskEnd = await waitForEvent("agent_end", 60000);
@@ -453,9 +453,9 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
     // Worker 1 claims task #1
     log("task-claim", "worker 1 claiming task via real claimTask");
     const claimed1 = await aimClaimTask(cwd, team, t1.id, "worker-1");
-    assert(claimed1 !== null, "w1 claimed task #1", `status: ${claimed1?.status}`);
+    assert("task" in claimed1, "w1 claimed task #1", `status: ${claimed1.task?.status}`);
 
-    s1({ type: "prompt", message: `you claimed task #${t1.id}: ${t1.subject}. reply with 'task1_done_by_w1'` });
+    s1({ type: "prompt", message: `you claimed task #${claimed1.task?.id}: ${claimed1.task?.subject}. reply with 'task1_done_by_w1'` });
     const t1End = await w1("agent_end", 30000);
     assert(t1End !== null, "w1 completed task #1", "");
 
@@ -469,9 +469,9 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
     // Worker 2 claims task #2
     log("task-claim", "worker 2 claiming task via real claimTask");
     const claimed2 = await aimClaimTask(cwd, team, t2.id, "worker-2");
-    assert(claimed2 !== null, "w2 claimed task #2", `status: ${claimed2?.status}`);
+    assert("task" in claimed2, "w2 claimed task #2", `status: ${claimed2.task?.status}`);
 
-    s2({ type: "prompt", message: `you claimed task #${t2.id}: ${t2.subject}. reply with 'task2_done_by_w2'` });
+    s2({ type: "prompt", message: `you claimed task #${claimed2.task?.id}: ${claimed2.task?.subject}. reply with 'task2_done_by_w2'` });
     const t2End = await w2("agent_end", 30000);
     assert(t2End !== null, "w2 completed task #2", "");
 
@@ -492,9 +492,9 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
     // Now task #3 is unblocked → claim it
     log("task-claim", "task #3 unblocked → worker 1 claims via real claimTask");
     const claimed3 = await aimClaimTask(cwd, team, t3.id, "worker-1");
-    assert(claimed3 !== null, "w1 claimed task #3 (unblocked after deps completed)", `status: ${claimed3?.status}`);
+    assert("task" in claimed3, "w1 claimed task #3 (unblocked after deps completed)", `status: ${claimed3.task?.status}`);
 
-    s1({ type: "prompt", message: `you claimed task #${t3.id}: ${t3.subject}. reply with 'task3_done_by_w1'` });
+    s1({ type: "prompt", message: `you claimed task #${claimed3.task?.id}: ${claimed3.task?.subject}. reply with 'task3_done_by_w1'` });
     const t3End = await w1("agent_end", 30000);
     assert(t3End !== null, "w1 completed task #3", "");
 

@@ -152,17 +152,60 @@ export interface SpawnTeammateConfig {
 // Tasks
 // ============================================================================
 
-/** Task status */
-export type TaskStatus = "pending" | "in_progress" | "completed" | "blocked" | "failed";
+/** Task type — determines execution strategy and UI presentation */
+export type TaskType =
+  | "local_agent"          // Sub-agent spawned via worker-pool
+  | "in_process_teammate"  // In-process teammate (future)
+  | "local_bash"           // Shell command task
+  | "local_workflow"       // Chain/workflow task
+  | "monitor"              // Monitor/observation task
+  | "dream";               // Memory consolidation task (aim-services)
+
+/** Task status — full 5-state lifecycle */
+export type TaskStatus = "pending" | "in_progress" | "completed" | "failed" | "killed";
+
+/** Valid state transitions map
+ *
+ *  pending → failed:  pre-condition not met after creation (e.g. blocker also failed)
+ *  pending → killed:  proactively cancelled before starting
+ *  pending → in_progress:  claimed by an agent and work begins
+ */
+export const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  pending:     ["in_progress", "failed", "killed"],
+  in_progress: ["completed", "failed", "killed"],
+  completed:   [],  // terminal
+  failed:      [],  // terminal
+  killed:      [],  // terminal
+};
+
+/** Check if a status is terminal (no further transitions allowed) */
+export function isTerminalStatus(status: TaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "killed";
+}
+
+/** Check if a transition from -> to is valid */
+export function canTransition(from: TaskStatus, to: TaskStatus): boolean {
+  return VALID_TRANSITIONS[from]?.includes(to) ?? false;
+}
 
 /** A single task in the shared task list */
 export interface TaskItem {
   id: string;
+  /** Task type — determines execution strategy */
+  type: TaskType;
   subject: string;
   description: string;
+  /** Present-tense display text (e.g. "Running tests") */
+  activeForm?: string;
   status: TaskStatus;
+  /** Agent that owns this task (undefined = unowned) */
   owner?: string;
+  /** IDs of tasks this task blocks (this → them) */
+  blocks: string[];
+  /** IDs of tasks that block this task (them → this) */
   blockedBy: string[];
+  /** Arbitrary metadata for extensibility */
+  metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
 }

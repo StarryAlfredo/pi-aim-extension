@@ -54,7 +54,12 @@ import {
   writeAgentMetadata, readAgentMetadata, readTranscript, appendToTranscript,
   recordSubagentSpawn, recordSubagentResult,
 } from "./aim-transcript.js";
-import { listTasks, createTask, updateTask, claimTask, findAvailableTask } from "./shared-tasks.js";
+import { 
+  listTasks, createTask, updateTask, claimTask, findAvailableTask,
+  deleteTask, blockTask, unblockTask, findUnblockedTasks, isAgentBusy, getAgentTasks, getTask,
+  isTerminalStatus, canTransition, VALID_TRANSITIONS, 
+  type TaskItem, type TaskStatus, type TaskType, type CreateTaskOptions,
+} from "./shared-tasks.js";
 
 // Re-export for other extensions
 export { workerPool } from "./worker-pool.js";
@@ -63,7 +68,12 @@ export { discoverAgents, formatAgentList } from "./agents.js";
 export { createTeam, deleteTeam, spawnTeammate, getActiveTeam } from "./teams.js";
 export { pollInbox, sendIdleNotification } from "./poller.js";
 export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult } from "./aim-transcript.js";
-export { listTasks, createTask, updateTask, claimTask, findAvailableTask } from "./shared-tasks.js";
+export { 
+  listTasks, createTask, updateTask, claimTask, findAvailableTask,
+  deleteTask, blockTask, unblockTask, findUnblockedTasks, isAgentBusy, getAgentTasks, getTask,
+  isTerminalStatus, canTransition, VALID_TRANSITIONS,
+  type TaskItem, type TaskStatus, type TaskType, type CreateTaskOptions,
+} from "./shared-tasks.js";
 export { parseStructuredMessage, createPlanApprovalRequest, createPlanApprovalResponse } from "./mailbox.js";
 export type { WorkerConfig, WorkerInfo, AgentConfig, AgentScope, AgentDiscoveryResult, TeammateMessage, TeamFile, TeamMember, SubagentSpawnData, SubagentResultData } from "./types.js";
 
@@ -368,7 +378,7 @@ async function runSingleAgent(
 // Schema Definitions
 // ============================================================================
 
-const TaskItem = Type.Object({
+const SubagentTaskItem = Type.Object({
   agent: Type.String({ description: "Name of the agent to invoke" }),
   task: Type.String({ description: "Task to delegate" }),
   cwd: Type.Optional(Type.String({ description: "Working directory" })),
@@ -390,7 +400,7 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
   task: Type.Optional(Type.String({ description: "Task (single mode)" })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel execution" })),
+  tasks: Type.Optional(Type.Array(SubagentTaskItem, { description: "Parallel execution" })),
   chain: Type.Optional(Type.Array(ChainItem, { description: "Sequential execution" })),
   agentScope: Type.Optional(AgentScopeSchema),
   fork: Type.Optional(Type.Boolean({ description: "Fork current session (inherit context)", default: false })),

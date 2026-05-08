@@ -224,7 +224,7 @@ async function test4_e2e_taskClaimCycle() {
   const taskData = {
     id: taskId, subject: "write-test-file",
     description: "Create a file named auton-test.txt with content 'autonomous-worker-done'",
-    status: "pending", owner: null as string | null, blockedBy: [] as string[],
+    status: "pending", owner: undefined, blockedBy: [],
     createdAt: Date.now(), updatedAt: Date.now(),
   };
 

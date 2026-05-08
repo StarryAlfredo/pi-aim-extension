@@ -105,11 +105,17 @@ export async function pollInbox(
     if (teamName) {
       const available = findAvailableTask(cwd, teamName);
       if (available) {
-        const claimed = await claimTask(cwd, teamName, available.id, agentName);
-        if (claimed) {
+        const result = await claimTask(cwd, teamName, available.id, agentName);
+        if (result && "task" in result) {
+          const { task: claimed } = result;
           const prompt = `Complete task #${claimed.id}: ${claimed.subject}\n\n${claimed.description || ""}`;
           return { type: "task_claimed", taskId: claimed.id, subject: claimed.subject, prompt };
         }
+        // Claim rejected — possible reasons:
+        //   agent_busy: this agent already owns an open task
+        //   blocked_by_X: a dependency hasn't completed yet
+        //   task_status_is_Y: another agent claimed it first
+        // All are non-fatal; will retry on next poll cycle.
       }
     }
 
