@@ -64,7 +64,19 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
   while (!signal.aborted) {
     // Wait for worker to become idle (completed current task)
     const info = workerPool.getInfo(workerId);
-    if (!info || info.state === "dead") return;
+    if (!info || info.state === "dead") {
+      // Worker is dead on entry — clean up the associated task if any.
+      // Without this, the task stays in_progress forever since no one
+      // will complete it.
+      if (activeTaskId) {
+        try {
+          await forceTaskStatus(cwd, teamName, activeTaskId, "failed", "worker_died_on_entry");
+        } catch (err: any) {
+          console.error(`[aim] CRITICAL: Failed to force-fail task #${activeTaskId} on worker death: ${err.message}. Task may be stuck in_progress.`);
+        }
+      }
+      return;
+    }
 
     // Track whether the worker just transitioned from running → idle (normal completion)
     let justCompletedWork = false;

@@ -112,10 +112,20 @@ export async function distributeAvailableTasks(
   // Retry up to 3 times per agent in case another agent claims the
   // same task concurrently (claimTask is atomic but findAvailableTask
   // is not — it always returns the lowest-ID available task).
+  // Track task IDs that failed to claim for this agent to avoid retrying the same task
+  const skippedTaskIds = new Set<string>();
+
   for (const agent of idleAgents) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const available = findAvailableTask(cwd, teamName);
       if (!available) break; // No more tasks to distribute
+
+      // Skip tasks we already failed to claim — another agent likely owns it
+      if (skippedTaskIds.has(available.id)) {
+        // The lowest-ID available task is one we can't claim — no point retrying
+        // unless a new task becomes available. Break and try next agent.
+        break;
+      }
 
       const result = await claimTask(cwd, teamName, available.id, agent.agentId);
       if ("task" in result) {
@@ -123,7 +133,8 @@ export async function distributeAvailableTasks(
         distributed++;
         break; // Success — move to next agent
       }
-      // Claim failed (another agent may have claimed first) — retry with next available task
+      // Claim failed — remember this task ID to avoid retrying
+      skippedTaskIds.add(available.id);
     }
   }
 

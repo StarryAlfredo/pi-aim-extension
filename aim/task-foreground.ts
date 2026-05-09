@@ -223,7 +223,7 @@ export function backgroundTask(id: string): TransitionResult {
 
   // Notify callbacks
   for (const cb of transitionCallbacks) {
-    try { cb(id, false); } catch {}
+    try { cb(id, false); } catch (err) { console.warn(`[aim] Transition callback error for ${id}:`, err); }
   }
 
   return { success: true, state };
@@ -261,7 +261,7 @@ export function foregroundTask(id: string): TransitionResult {
 
   // Notify callbacks
   for (const cb of transitionCallbacks) {
-    try { cb(id, true); } catch {}
+    try { cb(id, true); } catch (err) { console.warn(`[aim] Transition callback error for ${id}:`, err); }
   }
 
   return { success: true, state };
@@ -342,7 +342,7 @@ export function evictTask(id: string): void {
 
   // Notify eviction callbacks before removing
   for (const cb of evictCallbacks) {
-    try { cb(id); } catch {}
+    try { cb(id); } catch (err) { console.warn(`[aim] Evict callback error for ${id}:`, err); }
   }
 
   displayStates.delete(id);

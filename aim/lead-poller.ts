@@ -291,12 +291,28 @@ async function handlePermissionRequest(
     approved = result.approved;
     reason = result.reason;
   } else {
-    // Non-interactive mode: auto-DENY for safety.
-    // Without a permission handler, dangerous commands must be blocked
-    // to prevent unintended execution (rm -rf, sudo, etc.).
-    approved = false;
-    reason = "No permission handler registered — denied for safety. Register onPermissionRequest callback.";
-    console.warn('[aim:lead-poller] WARNING: No onPermissionRequest handler registered. Dangerous command denied by default.');
+    // Non-interactive mode: use a heuristic to decide.
+    // Known safe tools are auto-approved; dangerous commands are denied.
+    // This is a best-effort fallback — a proper ToolUseConfirm integration
+    // should be implemented for production use.
+    const SAFE_TOOLS = new Set(["read", "list", "glob", "grep", "search", "task_list", "task_output"]);
+    const DANGEROUS_PATTERNS = /rm\s+-[a-zA-Z]*f|sudo\s|mkfs|dd\s+if|format\s|del\s+\/[sS]|\bchmod\s+777|\bchown\s+root|>\s*\/dev\/sd|npm\s+publish|git\s+push\s+--force/i;
+
+    if (SAFE_TOOLS.has(toolName)) {
+      approved = true;
+    } else if (toolName === "bash" && toolArgs.command && typeof toolArgs.command === "string" && DANGEROUS_PATTERNS.test(toolArgs.command)) {
+      approved = false;
+      reason = `Dangerous command blocked by safety filter. Register onPermissionRequest callback for interactive approval.`;
+    } else if (toolName === "bash" || toolName === "write" || toolName === "edit") {
+      // Write operations without a permission handler: deny for safety.
+      // These can modify the filesystem and should have explicit approval.
+      approved = false;
+      reason = `Write operation (${toolName}) requires permission. Register onPermissionRequest callback for interactive approval.`;
+    } else {
+      // Unknown tool type: deny for safety
+      approved = false;
+      reason = `Permission required for ${toolName}. Register onPermissionRequest callback for interactive approval.`;
+    }
   }
 
   // Send response back to the requesting teammate

@@ -198,7 +198,24 @@ function writeTaskFile(cwd: string, team: string, task: TaskItem): void {
   const fp = taskFilePath(cwd, team, task.id);
   const tmp = fp + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(task, null, 2));
-  fs.renameSync(tmp, fp);
+  try {
+    fs.renameSync(tmp, fp);
+  } catch (renameErr: any) {
+    // renameSync can fail with EXDEV when tmp and target are on different
+    // filesystems (e.g. network drives, symlinks). Fall back to copy+unlink.
+    if (renameErr.code === "EXDEV") {
+      try {
+        fs.copyFileSync(tmp, fp);
+        fs.unlinkSync(tmp);
+      } catch (copyErr) {
+        // Copy fallback also failed — try to clean up tmp and rethrow original
+        try { fs.unlinkSync(tmp); } catch {}
+        throw renameErr;
+      }
+    } else {
+      throw renameErr;
+    }
+  }
 }
 
 // ============================================================================
@@ -737,11 +754,17 @@ export async function deleteTask(
   const dir = getTasksDir(cwd, team);
   if (!fs.existsSync(dir)) return false;
 
+  // Post-lock actions: executed after the lock is released to avoid deadlocks
+  // (same pattern as updateTask).
+  const postLockActions: (() => Promise<void>)[] = [];
+  let wasForceKilled = false;
+  let deletedTaskOwner: string | undefined;
+
   const release = await lock(listLockPath(cwd, team));
   try {
     // TOCTOU-safe: check existence inside the lock
     const fp = taskFilePath(cwd, team, taskId);
-    
+
     // Terminal state protection: reject deletion of non-terminal tasks unless force
     const task = readTaskFile(cwd, team, taskId);
     if (!task) return false;
@@ -756,6 +779,8 @@ export async function deleteTask(
       task.status = "killed";
       task.metadata = { ...task.metadata, killReason: "force_deleted" };
       task.updatedAt = Date.now();
+      wasForceKilled = true;
+      deletedTaskOwner = task.owner ?? undefined;
     }
     // Clean up references in other tasks.
     // Note: we intentionally modify terminal-state tasks here — this is
@@ -785,9 +810,52 @@ export async function deleteTask(
 
     // Delete the task file (high-water mark is preserved)
     try { fs.unlinkSync(fp); } catch { return false; }
+
+    // Schedule post-lock actions for force-killed tasks.
+    // These must run outside the lock to avoid deadlocks (same pattern as updateTask).
+    if (wasForceKilled) {
+      const owner = deletedTaskOwner;
+      postLockActions.push(() => propagateFailureToBlocked(cwd, team, taskId));
+      if (owner) {
+        postLockActions.push(async () => {
+          try {
+            await writeToMailbox(cwd, owner, {
+              from: "task-system",
+              text: JSON.stringify({ type: "task_failed", taskId, failedBy: "force_delete", reason: "Task force-deleted" } as TaskNotification),
+              timestamp: new Date().toISOString(),
+            }, team);
+          } catch (err) {
+            console.warn(`[aim] Failed to notify owner of force-deleted task #${taskId}:`, err);
+          }
+        });
+      }
+      // Notify team leader
+      postLockActions.push(async () => {
+        try {
+          await writeToMailbox(cwd, "team-lead", {
+            from: "task-system",
+            text: JSON.stringify({ type: "task_failed", taskId, failedBy: "force_delete", reason: "Task force-deleted" } as TaskNotification),
+            timestamp: new Date().toISOString(),
+          }, team);
+        } catch (err) {
+          console.warn(`[aim] Failed to notify team-lead of force-deleted task #${taskId}:`, err);
+        }
+      });
+    }
+
     return true;
   } finally {
     await release();
+  }
+
+  // Execute post-lock actions outside the critical section.
+  // Errors here are non-fatal — the task deletion itself has already succeeded.
+  for (const action of postLockActions) {
+    try {
+      await action();
+    } catch (err) {
+      console.warn(`[aim] Post-lock action failed for force-deleted task #${taskId}:`, err);
+    }
   }
 }
 
@@ -1077,16 +1145,19 @@ export async function cleanupStaleTasks(
     const age = now - task.updatedAt;
     if (age > maxAgeMs) {
       try {
-        await updateTask(cwd, team, task.id, {
-          status: "killed",
-          metadata: { ...task.metadata, killReason: "stale", staleAgeMs: age },
-        });
+        // Use forceTaskStatus (skipHooks=true) for infrastructure-level cleanup.
+        // Stale task cleanup is a system operation — hooks should not be able to
+        // prevent orphaned tasks from being cleaned up, otherwise they stay
+        // in_progress forever.
+        await forceTaskStatus(cwd, team, task.id, "killed", `stale (age: ${Math.round(age / 60000)}m)`);
         if (options?.autoDelete) {
           await deleteTask(cwd, team, task.id, { force: true });
         }
         cleaned++;
-      } catch {
-        // Hook veto or other error — skip this task
+      } catch (err) {
+        // forceTaskStatus should not fail due to hook veto (skipHooks=true),
+        // but other errors (file I/O, lock timeout) can still occur.
+        console.warn(`[aim] Failed to clean up stale task #${task.id}:`, err);
       }
     }
   }

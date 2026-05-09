@@ -117,8 +117,18 @@ export async function resumeTask(
   try {
     const possibleExisting = path.join(cwd, ".pi", "aim", "worktrees", `aim-${agentId}`);
     if (fs.existsSync(possibleExisting) && fs.statSync(possibleExisting).isDirectory()) {
-      // Reuse existing worktree — just set the paths
-      wt = { baseDir: possibleExisting, effectiveCwd: possibleExisting };
+      // Validate that this is a real git worktree, not just an empty/stale directory.
+      // A valid worktree has a .git file (not directory) pointing to the parent repo.
+      const gitFile = path.join(possibleExisting, ".git");
+      const isValidWorktree = fs.existsSync(gitFile) &&
+        (!fs.statSync(gitFile).isDirectory() || fs.existsSync(path.join(gitFile, "HEAD")));
+      if (isValidWorktree) {
+        wt = { baseDir: possibleExisting, effectiveCwd: possibleExisting };
+      } else {
+        // Stale/incomplete directory — remove it before creating a fresh worktree
+        console.warn(`[aim] Removing stale worktree directory: ${possibleExisting}`);
+        try { fs.rmSync(possibleExisting, { recursive: true, force: true }); } catch {}
+      }
     }
   } catch {}
   if (!wt) {
