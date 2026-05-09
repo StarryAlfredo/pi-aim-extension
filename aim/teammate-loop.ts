@@ -14,6 +14,8 @@ import { pollInbox, sendIdleNotification, type PollResult } from "./poller.js";
 import { workerPool } from "./worker-pool.js";
 import { updateTask, forceTaskStatus } from "./shared-tasks.js";
 import type { WorkerInfo } from "./types.js";
+// P3: Progress tracking for idle notifications
+import { getProgressTracker, generateCompactSummary, persistProgress } from "./task-progress.js";
 
 // ============================================================================
 // Types
@@ -176,7 +178,13 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
         // If the worker just completed work, indicate that in the notification.
         await sendIdleNotification(cwd, agentName, teamName, {
           idleReason: justCompletedWork ? "completed" : "available",
+          // P3: Include progress summary in idle notification
+          summary: getProgressTracker(agentName)
+            ? generateCompactSummary(agentName)
+            : undefined,
         });
+        // P3: Persist progress on each idle cycle (periodic checkpoint)
+        persistProgress(cwd, agentName);
         await new Promise(r => setTimeout(r, POLL_GAP_MS));
         break;
       }

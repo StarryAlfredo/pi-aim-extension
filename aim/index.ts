@@ -84,10 +84,49 @@ import { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVe
 import { startLeadPoller, type LeadPollerConfig, type PermissionRequestHandler } from "./lead-poller.js";
 import { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, type DistributionResult } from "./task-distributor.js";
 import { requestPermissionViaMailbox, isTeammateProcess, needsMailboxPermission, type PermissionResult } from "./permission-sync.js";
+// P3: Progress tracking
+import {
+  createProgressTracker, recordToolUse, recordTokenUsage, recordTurn,
+  recordStatusChange, recordError, removeProgressTracker,
+  persistProgress, deletePersistedProgress, loadProgress,
+  getProgressTracker, generateProgressSummary, generateCompactSummary,
+  formatTokenUsage, formatTokenCount,
+  type TaskProgress, type TokenUsage, type ActivityEntry,
+} from "./task-progress.js";
+// P4: Foreground/background management
+import {
+  createDisplayState, backgroundTask, foregroundTask, backgroundAll,
+  markCompleted, evictTask, resetAutoBackgroundTimer,
+  removeDisplayState, clearAllDisplayStates, cleanupCompletedDisplayStates,
+  getDisplayState, isForeground as isTaskForeground,
+  getForegroundTasks, getBackgroundTasks, hasForegroundTasks,
+  formatDisplayStateSummary, formatBackgroundTaskList,
+  onTransition as onDisplayTransition, onEvict,
+  type TaskDisplayState, type TransitionResult,
+} from "./task-foreground.js";
 export { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVerification, registerMarkNudgeSent, type TaskNotification } from "./task-notifications.js";
 export { startLeadPoller, type LeadPollerConfig, type PermissionRequestHandler } from "./lead-poller.js";
 export { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, type DistributionResult } from "./task-distributor.js";
 export { requestPermissionViaMailbox, isTeammateProcess, needsMailboxPermission, type PermissionResult } from "./permission-sync.js";
+// P3: Progress tracking re-exports
+export {
+  createProgressTracker, recordToolUse, recordTokenUsage, recordTurn,
+  recordStatusChange, recordError, removeProgressTracker,
+  persistProgress, deletePersistedProgress, loadProgress,
+  getProgressTracker, generateProgressSummary, generateCompactSummary,
+  formatTokenUsage, formatTokenCount,
+  type TaskProgress, type TokenUsage, type ActivityEntry,
+} from "./task-progress.js";
+// P4: Foreground/background re-exports
+export {
+  createDisplayState, backgroundTask, foregroundTask, backgroundAll,
+  markCompleted, evictTask, resetAutoBackgroundTimer,
+  removeDisplayState, clearAllDisplayStates, cleanupCompletedDisplayStates,
+  getDisplayState, isForeground as isTaskForeground,
+  getForegroundTasks, getBackgroundTasks, hasForegroundTasks,
+  formatDisplayStateSummary, formatBackgroundTaskList,
+  type TaskDisplayState, type TransitionResult,
+} from "./task-foreground.js";
 export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult } from "./aim-transcript.js";
 export { 
   listTasks, createTask, updateTask, claimTask, findAvailableTask,
@@ -358,7 +397,17 @@ async function runSingleAgent(
 
   onUpdate?.({ agent: params.agent, status: "running", output: "" });
 
+  // P4: Create display state for this task
+  const displayState = createDisplayState(agentId, {
+    isForeground: !params.background,
+    autoBackgroundAfterMs: params.background ? 0 : 60_000, // 60s auto-bg for foreground tasks
+    retain: false,
+  });
+
   if (params.background) {
+    // P3: Persist progress for background tasks so they can be inspected later
+    recordStatusChange(agentId, "background_launched");
+
     return {
       agent: params.agent, agentSource: agentDef.source, task: params.task,
       exitCode: -1, messages: [], stderr: "",
@@ -385,6 +434,20 @@ async function runSingleAgent(
       summary: finalOutput.slice(0, 200), usage, exitCode: result.exitCode ?? 1, model,
     });
 
+    // P3: Persist progress to disk before cleanup
+    persistProgress(cwd, agentId);
+
+    // P4: Mark task as completed in display state
+    markCompleted(agentId);
+
+    // P3: Clean up progress tracker (data already persisted)
+    // Delay removal to allow renderers to read final state
+    setTimeout(() => {
+      removeProgressTracker(agentId);
+      removeDisplayState(agentId);
+      deletePersistedProgress(cwd, agentId);
+    }, 5000);
+
     onUpdate?.({ agent: params.agent, status: result.exitCode === 0 ? "completed" : "error", output: finalOutput });
 
     return {
@@ -401,6 +464,14 @@ async function runSingleAgent(
       agentId, resumed: false,
     };
   } finally {
+    // P4: Always clean up display state and progress on error
+    if (agentId) {
+      markCompleted(agentId);
+      setTimeout(() => {
+        removeProgressTracker(agentId);
+        removeDisplayState(agentId);
+      }, 5000);
+    }
     // Always clean up worktree after agent completes
     if (wtBaseDir) {
       removeWorktreeByBase(cwd, wtBaseDir);
@@ -853,4 +924,37 @@ export default function (pi: ExtensionAPI) {
   if (activeTeam) {
     startLeadPollerForTeam(activeTeam, process.cwd());
   }
+
+  // ========== P4: DISPLAY TRANSITION CALLBACKS ==========
+  // When a task transitions to background, notify the user.
+  // When a task is evicted, clean up resources.
+  onDisplayTransition((id, isFg) => {
+    if (!isFg) {
+      // Task moved to background — inform the user
+      const progress = getProgressTracker(id);
+      const status = progress ? generateCompactSummary(id) : "running";
+      pi.sendMessage({
+        role: "user",
+        content: `⏸️ Task ${id} moved to background (${status})`,
+      });
+    }
+  });
+
+  onEvict((id) => {
+    // Clean up progress and display state for evicted tasks
+    removeProgressTracker(id);
+    deletePersistedProgress(process.cwd(), id);
+  });
+
+  // P3+P4: Periodic cleanup of stale progress trackers and completed display states
+  // Runs every 5 minutes
+  setInterval(() => {
+    import("./task-progress.js").then(({ cleanupStaleProgress }) => {
+      const progressCleaned = cleanupStaleProgress();
+      const displayCleaned = cleanupCompletedDisplayStates();
+      if (progressCleaned > 0 || displayCleaned > 0) {
+        console.info(`[aim] Cleanup: ${progressCleaned} stale progress, ${displayCleaned} display states removed`);
+      }
+    });
+  }, 300_000);
 }

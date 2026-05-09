@@ -11,6 +11,10 @@ import { Container, Markdown, Text, Spacer } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import * as os from "node:os";
+// P3: Progress rendering
+import { getProgressTracker, generateCompactSummary, type TaskProgress } from "./task-progress.js";
+// P4: Foreground/background display
+import { getDisplayState, formatDisplayStateSummary, getBackgroundTasks, formatBackgroundTaskList } from "./task-foreground.js";
 
 // ============================================================================
 // Formatters
@@ -207,4 +211,93 @@ export function renderSubagentResult(
     if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
   }
   return new Container({ children: [new Text(text, 0, 0)] });
+}
+
+// ============================================================================
+// P3+P4: Progress & Display State Rendering
+// ============================================================================
+
+/**
+ * Render a live progress indicator for a running task.
+ * Shows turns, tools, tokens, and recent activity.
+ */
+export function renderProgressIndicator(
+  agentId: string,
+  theme: Theme,
+): Container {
+  const container = new Container();
+  const progress = getProgressTracker(agentId);
+  const display = getDisplayState(agentId);
+
+  if (!progress && !display) {
+    container.addChild(new Text(theme.fg("dim", "(no progress data)"), 0, 0));
+    return container;
+  }
+
+  // Display state line
+  if (display) {
+    const fgIcon = display.isForeground ? "🖥️" : "⏸️";
+    const fgLabel = display.isForeground ? "foreground" : "background";
+    container.addChild(new Text(
+      theme.fg("muted", `${fgIcon} ${fgLabel}`) +
+      (display.completedAt ? theme.fg("success", " ✓ completed") : ""),
+      0, 0,
+    ));
+  }
+
+  // Progress lines
+  if (progress) {
+    const elapsed = Date.now() - progress.startedAt;
+    const elapsedSec = Math.round(elapsed / 1000);
+    const mins = Math.floor(elapsedSec / 60);
+    const secs = elapsedSec % 60;
+    const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+    const totalTokens = progress.tokenUsage.input + progress.tokenUsage.output;
+    container.addChild(new Text(
+      theme.fg("dim",
+        `📊 ${progress.turnCount} turns | ${progress.toolUseCount} tools` +
+        ` | ${formatTokens(totalTokens)} tokens | ${elapsedStr}`
+      ), 0, 0,
+    ));
+
+    // Show tools used (compact)
+    if (progress.toolsUsed.length > 0) {
+      const toolStr = progress.toolsUsed.slice(0, 5).join(", ") +
+        (progress.toolsUsed.length > 5 ? ` +${progress.toolsUsed.length - 5}` : "");
+      container.addChild(new Text(theme.fg("dim", `🔧 ${toolStr}`), 0, 0));
+    }
+
+    // Show last 3 activities
+    const recent = progress.activities.slice(-3);
+    for (const a of recent) {
+      const icon = { tool_use: "🔧", message: "💬", status_change: "🔄", error: "⚠️" }[a.type];
+      container.addChild(new Text(theme.fg("dim", `  ${icon} ${a.detail}`), 0, 0));
+    }
+  }
+
+  return container;
+}
+
+/**
+ * Render the background tasks panel.
+ * Shows all background tasks with their progress.
+ */
+export function renderBackgroundTasksPanel(theme: Theme): Container {
+  const container = new Container();
+  const bgTasks = formatBackgroundTaskList();
+
+  container.addChild(new Text(
+    theme.fg("toolTitle", theme.bold("⏸️ Background Tasks")), 0, 0,
+  ));
+
+  if (bgTasks.length === 1 && bgTasks[0] === "(no background tasks)") {
+    container.addChild(new Text(theme.fg("dim", "  No background tasks"), 0, 0));
+  } else {
+    for (const line of bgTasks) {
+      container.addChild(new Text(theme.fg("dim", `  ${line}`), 0, 0));
+    }
+  }
+
+  return container;
 }

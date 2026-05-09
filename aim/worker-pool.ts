@@ -24,6 +24,18 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@mariozechner/pi-ai";
 import type { WorkerConfig, WorkerInfo, WorkerState } from "./types.js";
+import {
+  createProgressTracker,
+  recordToolUse,
+  recordTokenUsage,
+  recordTurn,
+  recordStatusChange,
+  recordError,
+  removeProgressTracker,
+  persistProgress,
+  deletePersistedProgress,
+  type TaskProgress,
+} from "./task-progress.js";
 
 // ============================================================================
 // Helpers
@@ -146,6 +158,12 @@ export class WorkerPool {
       turnCount: 0,
     };
 
+    // P3: Create progress tracker for this worker if agentId is set
+    if (config.agentId) {
+      createProgressTracker(config.agentId);
+      recordStatusChange(config.agentId, "worker_spawned");
+    }
+
     // donePromise: resolves on agent_end (RPC) or close (print)
     // Reset for each turn in RPC mode via resetDonePromise()
     info.donePromise = new Promise((resolve, reject) => {
@@ -253,9 +271,50 @@ export class WorkerPool {
         try {
           const event = JSON.parse(line) as Record<string, unknown>;
 
-          // Collect messages
-          if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
+          // P3: Track tool usage in progress tracker
+          // Detect tool_use_start events from the JSON stream
+          if (event.type === "tool_use_start" && event.tool_name) {
+            const agentId = info.config.agentId;
+            if (agentId) recordToolUse(agentId, event.tool_name as string);
+          }
+
+          // P3: Track tool_result with token usage
+          if (event.type === "tool_result_end" && event.message) {
             info.messages.push(event.message as Message);
+            // Extract usage from tool results if available
+            const agentId = info.config.agentId;
+            if (agentId && event.usage) {
+              const usage = event.usage as Record<string, number>;
+              recordTokenUsage(agentId, {
+                input: usage.input ?? 0,
+                output: usage.output ?? 0,
+                cacheRead: usage.cacheRead ?? 0,
+                cacheWrite: usage.cacheWrite ?? 0,
+              });
+            }
+          }
+
+          // Collect messages
+          if ((event.type === "message_end" || (event.type === "tool_result_end" && !event.message)) && event.message) {
+            info.messages.push(event.message as Message);
+          }
+
+          // P3: Track assistant message tokens on message_end
+          if (event.type === "message_end") {
+            const agentId = info.config.agentId;
+            if (agentId) {
+              recordTurn(agentId);
+              // Extract usage from the message if present
+              if (event.usage) {
+                const usage = event.usage as Record<string, number>;
+                recordTokenUsage(agentId, {
+                  input: usage.input ?? 0,
+                  output: usage.output ?? 0,
+                  cacheRead: usage.cacheRead ?? 0,
+                  cacheWrite: usage.cacheWrite ?? 0,
+                });
+              }
+            }
           }
 
           // P1: agent_end = worker completed one turn
@@ -268,6 +327,19 @@ export class WorkerPool {
             // Store usage from agent_end for idle notifications
             if (event.usage) {
               (info as Record<string, unknown>).lastUsage = event.usage;
+              // P3: Record final token usage from agent_end
+              const agentId = info.config.agentId;
+              if (agentId) {
+                const usage = event.usage as Record<string, number>;
+                recordTokenUsage(agentId, {
+                  input: usage.input ?? 0,
+                  output: usage.output ?? 0,
+                  cacheRead: usage.cacheRead ?? 0,
+                  cacheWrite: usage.cacheWrite ?? 0,
+                });
+                recordTurn(agentId);
+                recordStatusChange(agentId, "agent_end (turn complete)");
+              }
             }
 
             // Resolve donePromise — callers waiting on waitFor() are unblocked
@@ -286,6 +358,11 @@ export class WorkerPool {
     if (!info || info.state === "dead") return false;
     try {
       info.state = "dead";
+      // P3: Record error and clean up progress tracker
+      const agentId = info.config.agentId;
+      if (agentId) {
+        recordError(agentId, "worker_killed");
+      }
       process.kill(info.pid!, "SIGTERM");
       setTimeout(() => {
         if (info.state !== "dead") { try { process.kill(info.pid!, "SIGKILL"); } catch {} }
