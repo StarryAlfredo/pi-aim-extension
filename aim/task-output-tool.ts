@@ -18,6 +18,8 @@ import { getActiveTeam } from "./teams.js";
 import { getProgressTracker, generateProgressSummary, generateCompactSummary } from "./task-progress.js";
 import { readAgentMetadata, readTranscript } from "./aim-transcript.js";
 import { getFinalOutput } from "./render.js";
+// P7: Result storage
+import { readPersistedResult, isResultPersisted, getPersistedResultPath, PER_AGENT_INLINE_LIMIT } from "./task-result-storage.js";
 import type { TaskItem } from "./types.js";
 
 // ============================================================================
@@ -139,35 +141,63 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
         }
       }
 
-      // For completed agent tasks, try to read transcript output
+      // For completed agent tasks, try to read output
+      // P7: Priority: persisted result file > transcript
       if (isTerminalStatus(task.status)) {
         lines.push("");
 
-        // Try to find output from agent transcript
-        // The task's owner might be an agentId, or the task ID itself might be used
-        const possibleAgentIds = [task.owner, taskId].filter(Boolean);
+        // P7: Try persisted result file first (from task-result-storage.ts)
+        const possibleAgentIds = [task.metadata?.agentId, task.owner, taskId].filter(Boolean) as string[];
+        let outputFound = false;
 
         for (const agentId of possibleAgentIds) {
-          const meta = readAgentMetadata(ctx.cwd, agentId);
-          if (meta) {
-            const transcriptMsgs = readTranscript(ctx.cwd, agentId);
-            if (transcriptMsgs.length > 0) {
-              const output = getFinalOutput(transcriptMsgs);
-              if (output) {
-                // Check if output is oversized — provide preview + path
-                const MAX_INLINE = 10_000;
-                if (output.length > MAX_INLINE) {
-                  lines.push(`📄 Output (${output.length.toLocaleString()} chars):`);
-                  lines.push(output.slice(0, MAX_INLINE));
-                  lines.push(`\n... (truncated. Full output in transcript: .pi/aim/agents/${agentId}.jsonl)`);
-                } else {
-                  lines.push("📄 Output:");
-                  lines.push(output);
+          // Check if there's a persisted result file from P7 overflow handling
+          if (isResultPersisted(ctx.cwd, agentId)) {
+            const fullOutput = readPersistedResult(ctx.cwd, agentId);
+            if (fullOutput) {
+              const MAX_INLINE = 10_000;
+              if (fullOutput.length > MAX_INLINE) {
+                lines.push(`📄 Output (${fullOutput.length.toLocaleString()} chars):`);
+                lines.push(fullOutput.slice(0, MAX_INLINE));
+                lines.push(`\n... (truncated. Full output: ${getPersistedResultPath(ctx.cwd, agentId)})`);
+              } else {
+                lines.push("📄 Output:");
+                lines.push(fullOutput);
+              }
+              outputFound = true;
+              break;
+            }
+          }
+        }
+
+        // Fallback: try to read from agent transcript (existing behavior)
+        if (!outputFound) {
+          for (const agentId of possibleAgentIds) {
+            const meta = readAgentMetadata(ctx.cwd, agentId);
+            if (meta) {
+              const transcriptMsgs = readTranscript(ctx.cwd, agentId);
+              if (transcriptMsgs.length > 0) {
+                const output = getFinalOutput(transcriptMsgs);
+                if (output) {
+                  const MAX_INLINE = 10_000;
+                  if (output.length > MAX_INLINE) {
+                    lines.push(`📄 Output (${output.length.toLocaleString()} chars):`);
+                    lines.push(output.slice(0, MAX_INLINE));
+                    lines.push(`\n... (truncated. Full output in transcript: .pi/aim/agents/${agentId}.jsonl)`);
+                  } else {
+                    lines.push("📄 Output:");
+                    lines.push(output);
+                  }
+                  outputFound = true;
+                  break;
                 }
-                break; // Found output, stop trying other IDs
               }
             }
           }
+        }
+
+        if (!outputFound && task.status === "completed") {
+          lines.push("📄 Output: (no output captured)");
         }
 
         if (task.status === "failed" && task.metadata?.failureReason) {

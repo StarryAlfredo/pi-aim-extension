@@ -91,6 +91,24 @@ import { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVe
 import { startLeadPoller, type LeadPollerConfig, type PermissionRequestHandler } from "./lead-poller.js";
 import { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, type DistributionResult } from "./task-distributor.js";
 import { requestPermissionViaMailbox, isTeammateProcess, needsMailboxPermission, type PermissionResult } from "./permission-sync.js";
+// P7: Result overflow protection
+import {
+  handleResultOverflow, handleBatchOverflow,
+  readPersistedResult, isResultPersisted, getPersistedResultPath,
+  formatOverflowDisplay, formatBatchOverflowDisplay,
+  cleanupResultFiles,
+  PER_AGENT_INLINE_LIMIT, PER_AGENT_PREVIEW_BYTES, PER_MESSAGE_BUDGET,
+  type OverflowResult, type BatchOverflowResult,
+} from "./task-result-storage.js";
+// P8: Task rendering
+import {
+  renderTaskList, renderTaskListText, renderTaskDetail,
+  renderAgentStatuses, renderAgentStatusesText,
+  renderTaskEvent, renderTaskEventText,
+  renderProgressInline, renderProgressDetail,
+  renderDashboard, renderDashboardText,
+  renderTaskBadge,
+} from "./task-render.js";
 // P3: Progress tracking
 import {
   createProgressTracker, recordToolUse, recordTokenUsage, recordTurn,
@@ -161,6 +179,24 @@ export {
   findLeastBusyAgent, getAgentOpenTasks, formatAgentStatuses,
   type AgentStatus, type AgentBusyState, type TeamAgentStatusSnapshot,
 } from "./agent-status.js";
+// P7: Result storage re-exports
+export {
+  handleResultOverflow, handleBatchOverflow,
+  readPersistedResult, isResultPersisted, getPersistedResultPath,
+  formatOverflowDisplay, formatBatchOverflowDisplay,
+  cleanupResultFiles,
+  PER_AGENT_INLINE_LIMIT, PER_AGENT_PREVIEW_BYTES, PER_MESSAGE_BUDGET,
+  type OverflowResult, type BatchOverflowResult,
+} from "./task-result-storage.js";
+// P8: Task render re-exports
+export {
+  renderTaskList, renderTaskListText, renderTaskDetail,
+  renderAgentStatuses, renderAgentStatusesText,
+  renderTaskEvent, renderTaskEventText,
+  renderProgressInline, renderProgressDetail,
+  renderDashboard, renderDashboardText,
+  renderTaskBadge,
+} from "./task-render.js";
 export { parseStructuredMessage, createPlanApprovalRequest, createPlanApprovalResponse } from "./mailbox.js";
 export type { WorkerConfig, WorkerInfo, AgentConfig, AgentScope, AgentDiscoveryResult, TeammateMessage, TeamFile, TeamMember, SubagentSpawnData, SubagentResultData } from "./types.js";
 
@@ -657,9 +693,12 @@ export default function (pi: ExtensionAPI) {
             details: { mode: "resume", background: true, agentId: result.agentId },
           };
         }
+        // P7: Apply overflow protection to resume output
+        const fullOutput = getFinalOutput(result.messages) || "(no output)";
+        const overflow = handleResultOverflow(cwd, result.agentId ?? params.resume, fullOutput);
         return {
-          content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
-          details: { mode: "resume", result },
+          content: [{ type: "text", text: overflow.display }],
+          details: { mode: "resume", result, overflow },
         };
       }
 
@@ -694,7 +733,11 @@ export default function (pi: ExtensionAPI) {
           }
           prev = getFinalOutput(r.messages);
         }
-        return { content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }], details: { mode: "chain", results } };
+        // P7: Apply overflow protection to chain's final output
+        const finalOutput = getFinalOutput(results[results.length - 1].messages) || "(no output)";
+        const finalAgentId = results[results.length - 1].agentId ?? results[results.length - 1].agent;
+        const overflow = handleResultOverflow(cwd, finalAgentId, finalOutput);
+        return { content: [{ type: "text", text: overflow.display }], details: { mode: "chain", results, overflow } };
       }
 
       // --- Parallel ---
@@ -708,79 +751,27 @@ export default function (pi: ExtensionAPI) {
         const ok = results.filter(r => r.exitCode === 0).length;
 
         // ===========================================================================
-        // Result size handling - automatic persistence (same philosophy as Claude Code)
+        // P7: Result overflow protection — centralized via task-result-storage.ts
         //
-        // Parallel agents produce multiple results that together can overwhelm the
-        // parent agent's context window. We auto-detect oversized results and
-        // persist them to disk, leaving a preview + file path in the inline response.
-        //
-        // Thresholds align with Claude Code's own toolResultStorage design:
-        //   PER_AGENT_INLINE_LIMIT  = 50,000 chars (tool-level, before persistence)
-        //   PER_AGENT_PREVIEW_BYTES =  2,000 chars (preview kept inline after persistence)
-        //   PER_MESSAGE_BUDGET      = 200,000 chars (sum of ALL inline results in one turn)
-        //
-        // The parent agent NEVER needs to choose output modes - the framework
-        // handles it transparently. If a result is truncated, the parent sees
-        // a file path and uses Read to fetch what it needs.
+        // All execution modes now use the same overflow handling:
+        //   Phase 1: Per-agent results exceeding PER_AGENT_INLINE_LIMIT → persist to disk
+        //   Phase 2: Per-message budget check → truncate all if total exceeds budget
+        //   Parent agent uses read tool to access full output from persisted files.
         // ===========================================================================
 
-        const PER_AGENT_INLINE_LIMIT = 50_000;
-        const PER_AGENT_PREVIEW_BYTES = 2_000;
-        const PER_MESSAGE_BUDGET = 200_000;
+        const batchItems = results.map(r => ({
+          agentId: r.agentId ?? r.agent,
+          fullOutput: getFinalOutput(r.messages),
+          agentName: r.agent,
+          exitCode: r.exitCode,
+        }));
 
-        // Phase 1: Persist oversized individual results to disk
-        const fs = await import("node:fs");
-        const nodePath = await import("node:path");
-        const dir = nodePath.join(cwd, ".pi", "aim", "task-outputs");
-        fs.mkdirSync(dir, { recursive: true });
+        const batch = handleBatchOverflow(cwd, batchItems);
+        const agentNames = results.map(r => r.agent);
+        const exitCodes = results.map(r => r.exitCode);
+        const displayText = formatBatchOverflowDisplay(batch, agentNames, exitCodes, ok, results.length);
 
-        for (const r of results) {
-          const full = getFinalOutput(r.messages);
-          if (full.length > PER_AGENT_INLINE_LIMIT && r.agentId) {
-            fs.writeFileSync(nodePath.join(dir, `${r.agentId}-output.txt`), full, "utf-8");
-          }
-        }
-
-        // Phase 2: Build inline display lines (with per-agent truncation)
-        let totalInlineSize = 0;
-        const lines: string[] = [];
-        for (const r of results) {
-          const fullOutput = getFinalOutput(r.messages);
-          const hasDiskCopy = fullOutput.length > PER_AGENT_INLINE_LIMIT && r.agentId;
-          const statusIcon = r.exitCode === 0 ? "✓" : "✗";
-
-          let display: string;
-          if (hasDiskCopy) {
-            // Large result: show preview only, point to file
-            const preview = fullOutput.slice(0, PER_AGENT_PREVIEW_BYTES);
-            display = preview + `\n... (truncated, ${fullOutput.length} chars total. Full output: .pi/aim/task-outputs/${r.agentId}-output.txt)`;
-          } else if (fullOutput.length > PER_AGENT_PREVIEW_BYTES) {
-            // Medium result: fits under persistence threshold but is still large.
-            // Keep inline (no disk copy) but show a size hint.
-            display = fullOutput.slice(0, PER_AGENT_PREVIEW_BYTES * 4) + `\n... (${fullOutput.length} chars total, inline, not persisted)`;
-          } else {
-            // Small result: full inline
-            display = fullOutput || "(no output)";
-          }
-
-          totalInlineSize += display.length;
-          const errorHint = r.exitCode !== 0 ? `\n⚠️ This agent FAILED. Retry with corrected parameters. Do NOT work around it by reading project files yourself.` : "";
-          lines.push(`[${r.agent}] ${statusIcon}: ${display}${errorHint}`);
-        }
-
-        // Phase 3: Per-message budget check - if total inline content exceeds
-        // budget, mark the entire batch as requiring file reads (but still show
-        // what we have so the coordinator can make decisions).
-        const overBudget = totalInlineSize > PER_MESSAGE_BUDGET;
-        const budgetNote = overBudget
-          ? `\n⚠️ Per-message budget (${PER_MESSAGE_BUDGET.toLocaleString()} chars) exceeded (${totalInlineSize.toLocaleString()} chars total). Consider reading individual output files for full results.`
-          : "";
-
-        const truncatedNote = lines.some(l => l.includes("(truncated"))
-          ? `\n⚠️ Some results truncated. Read the output file shown for full content.`
-          : "";
-
-        return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} OK${truncatedNote}${budgetNote}\n\n${lines.join("\n\n")}` }], details: { mode: "parallel", results } };
+        return { content: [{ type: "text", text: displayText }], details: { mode: "parallel", results } };
       }
 
       // --- Single ---
@@ -799,7 +790,10 @@ export default function (pi: ExtensionAPI) {
           const err = result.errorMessage || result.stderr || "(no output)";
           return { content: [{ type: "text", text: `Agent ${result.stopReason}: ${err}` }], details: { mode: "single", result }, isError: true };
         }
-        return { content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }], details: { mode: "single", result } };
+        // P7: Apply overflow protection to single agent output
+        const fullOutput = getFinalOutput(result.messages) || "(no output)";
+        const overflow = handleResultOverflow(cwd, result.agentId ?? result.agent, fullOutput);
+        return { content: [{ type: "text", text: overflow.display }], details: { mode: "single", result, overflow } };
       }
 
       return { content: [{ type: "text", text: `Invalid params. Available: ${agents.map(a => a.name).join(", ") || "none"}` }], details: { mode: "invalid" } };
@@ -1115,14 +1109,45 @@ export default function (pi: ExtensionAPI) {
   });
 
   // P3+P4: Periodic cleanup of stale progress trackers and completed display states
+  // P7: Also clean up old result files from disk
   // Runs every 5 minutes
   setInterval(() => {
     import("./task-progress.js").then(({ cleanupStaleProgress }) => {
       const progressCleaned = cleanupStaleProgress();
       const displayCleaned = cleanupCompletedDisplayStates();
-      if (progressCleaned > 0 || displayCleaned > 0) {
-        console.info(`[aim] Cleanup: ${progressCleaned} stale progress, ${displayCleaned} display states removed`);
+      const resultFilesCleaned = cleanupResultFiles(process.cwd());
+      if (progressCleaned > 0 || displayCleaned > 0 || resultFilesCleaned > 0) {
+        console.info(`[aim] Cleanup: ${progressCleaned} stale progress, ${displayCleaned} display states, ${resultFilesCleaned} result files removed`);
       }
     });
   }, 300_000);
+
+  // ========== P8: TASK EVENT MESSAGE RENDERER ==========
+  // Register a custom renderer for task-system notification messages.
+  // When a task event (assignment, completion, unblocked, etc.) arrives
+  // via the mailbox system or pi.sendMessage, this renderer intercepts
+  // it and produces a styled TUI display instead of raw JSON.
+  //
+  // The renderer is keyed on "aim-task-event" — messages sent with
+  // pi.sendMessage({ ... details: { type: "aim-task-event" } }) will
+  // be routed here. For mailbox-based notifications (JSON in content),
+  // the renderTaskEventText function is used directly by the lead poller
+  // and task-list tool.
+
+  const TASK_EVENT_TYPE = "aim-task-event";
+
+  pi.registerMessageRenderer<TaskNotification>(TASK_EVENT_TYPE, (message, _options, theme) => {
+    const notif = message.details as TaskNotification | undefined;
+    if (!notif) {
+      // Fallback: try parsing from content
+      const content = typeof message.content === "string" ? message.content : "";
+      try {
+        const parsed = JSON.parse(content) as TaskNotification;
+        return new Text(renderTaskEvent(parsed, theme), 0, 0);
+      } catch {
+        return undefined;
+      }
+    }
+    return new Text(renderTaskEvent(notif, theme), 0, 0);
+  });
 }

@@ -15,6 +15,8 @@ import * as os from "node:os";
 import { getProgressTracker, generateCompactSummary, type TaskProgress } from "./task-progress.js";
 // P4: Foreground/background display
 import { getDisplayState, formatDisplayStateSummary, getBackgroundTasks, formatBackgroundTaskList } from "./task-foreground.js";
+// P8: Task rendering
+import { renderProgressInline, renderProgressDetail, renderTaskBadge } from "./task-render.js";
 
 // ============================================================================
 // Formatters

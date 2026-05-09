@@ -15,8 +15,10 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { listTasks, isTerminalStatus } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
-import { getTeamStatusSnapshot, formatAgentStatuses } from "./agent-status.js";
+import { getTeamStatusSnapshot, formatAgentStatuses, type AgentStatus } from "./agent-status.js";
 import { getProgressTracker, generateCompactSummary } from "./task-progress.js";
+// P8: Dashboard rendering
+import { renderDashboardText, renderTaskListText, renderAgentStatusesText } from "./task-render.js";
 import type { TaskItem, TaskStatus } from "./types.js";
 
 // ============================================================================
@@ -75,57 +77,27 @@ export function registerTaskListTool(pi: ExtensionAPI): void {
         tasks = tasks.filter(t => t.owner === params.owner_filter);
       }
 
-      // Build task list display
-      const lines: string[] = [];
+      // Build dashboard display (P8: using centralized rendering)
+      let displayText: string;
 
       if (tasks.length === 0) {
-        lines.push("📋 No tasks found.");
         if (params.status_filter || params.owner_filter) {
-          lines.push("   (Try without filters to see all tasks)");
+          displayText = "📋 No tasks found matching filters. (Try without filters to see all tasks)";
+        } else {
+          displayText = "📋 No tasks found.";
         }
       } else {
-        lines.push(`📋 Tasks (${tasks.length}):`);
-        lines.push("");
-
-        for (const task of tasks) {
-          const statusIcon: Record<string, string> = {
-            pending: "⏳", in_progress: "🔄", completed: "✅", failed: "❌", killed: "💀",
-          };
-          const icon = statusIcon[task.status] ?? "?";
-
-          const owner = task.owner ? ` (${task.owner})` : " (unassigned)";
-          const typeTag = task.type !== "local_agent" ? ` [${task.type}]` : "";
-          const blocked = task.blockedBy.length > 0
-            ? ` [blocked by: ${task.blockedBy.map(id => `#${id}`).join(",")}]`
-            : "";
-
-          lines.push(`  ${icon} #${task.id}: ${task.subject}${owner}${typeTag}${blocked}`);
-
-          // Progress for active tasks
-          if (task.status === "in_progress") {
-            const progress = getProgressTracker(task.id);
-            if (progress) {
-              lines.push(`     📊 ${generateCompactSummary(task.id)}`);
-            }
-          }
-
-          // Active form
-          if (task.activeForm) {
-            lines.push(`     → ${task.activeForm}`);
-          }
+        // Use P8 dashboard rendering for full display
+        try {
+          const snapshot = getTeamStatusSnapshot(ctx.cwd, team);
+          displayText = renderDashboardText(tasks, snapshot, team);
+        } catch {
+          // Fallback to simple task list if agent status unavailable
+          displayText = renderTaskListText(tasks, team);
         }
       }
 
-      // Agent status snapshot
-      lines.push("");
-      try {
-        const snapshot = getTeamStatusSnapshot(ctx.cwd, team);
-        lines.push(formatAgentStatuses(snapshot));
-      } catch {
-        lines.push("(Agent status unavailable)");
-      }
-
-      // Summary stats
+      // Summary stats (always show for the full team, not filtered)
       const allTasks = listTasks(ctx.cwd, team);
       const stats = {
         total: allTasks.length,
@@ -136,15 +108,13 @@ export function registerTaskListTool(pi: ExtensionAPI): void {
         killed: allTasks.filter(t => t.status === "killed").length,
       };
 
-      lines.push("");
-      lines.push(
-        `📊 Total: ${stats.total} | ` +
-        `⏳ ${stats.pending} pending | 🔄 ${stats.in_progress} active | ` +
-        `✅ ${stats.completed} done | ❌ ${stats.failed} failed | 💀 ${stats.killed} killed`,
-      );
+      // Add filter info if filtered results differ from full list
+      if (params.status_filter || params.owner_filter) {
+        displayText += `\n\n(Filter: ${[params.status_filter, params.owner_filter].filter(Boolean).join(", ")} — showing ${tasks.length} of ${stats.total} tasks)`;
+      }
 
       return {
-        content: [{ type: "text", text: lines.join("\n") }],
+        content: [{ type: "text", text: displayText }],
         details: { tasks, stats },
       };
     },
