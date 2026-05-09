@@ -139,6 +139,14 @@ export async function spawnTeammate(
     background: true,
   });
 
+  // P2: Pass team_name to the worker config so the child process
+  // can detect it's a teammate (via TEAMMATE_TEAM env var set by
+  // worker-pool.ts). This enables mailbox-based permission requests.
+  const workerInfo = workerPool.getInfo(workerId);
+  if (workerInfo) {
+    (workerInfo.config as Record<string, unknown>).team_name = teamName;
+  }
+
   // Register in team file
   const team = await readTeamFile(cwd, teamName);
   if (team) {

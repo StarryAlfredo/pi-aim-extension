@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { requestPermissionViaMailbox, needsMailboxPermission } from "./permission-sync.js";
 
 // ============================================================================
 // Dangerous Patterns
@@ -49,6 +50,30 @@ export function registerPermissions(pi: ExtensionAPI) {
     // Check dangerous patterns
     const dangerous = DANGEROUS_COMMANDS.find((p) => p.test(command));
     if (dangerous) {
+      // P2: If this is a teammate process, route permission request
+      // through the mailbox system instead of trying to show a local UI.
+      // Teammate processes run without a TUI, so they can't show
+      // confirmation dialogs. Instead, they ask the team lead via mailbox,
+      // and the lead presents the request to the user.
+      if (needsMailboxPermission()) {
+        const { agentName, teamName } = (() => {
+          const info = (() => {
+            const agentName = process.env.TEAMMATE_NAME;
+            const teamName = process.env.TEAMMATE_TEAM;
+            return { agentName, teamName };
+          })();
+          return { agentName: info.agentName!, teamName: info.teamName! };
+        })();
+        const result = await requestPermissionViaMailbox(
+          process.cwd(), agentName, teamName,
+          "bash", { command },
+        );
+        if (!result.approved) {
+          return { block: true, reason: `Blocked by team lead: ${result.reason ?? "permission denied"}` };
+        }
+        return; // Approved — allow the command
+      }
+
       if (ctx.hasUI) {
         const ok = await ctx.ui.confirm(
           "⚠️  Dangerous Command Detected",

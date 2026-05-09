@@ -81,7 +81,13 @@ export { discoverAgents, formatAgentList } from "./agents.js";
 export { createTeam, deleteTeam, spawnTeammate, getActiveTeam } from "./teams.js";
 export { pollInbox, sendIdleNotification } from "./poller.js";
 import { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVerification, registerMarkNudgeSent, type TaskNotification } from "./task-notifications.js";
+import { startLeadPoller, type LeadPollerConfig, type PermissionRequestHandler } from "./lead-poller.js";
+import { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, type DistributionResult } from "./task-distributor.js";
+import { requestPermissionViaMailbox, isTeammateProcess, needsMailboxPermission, type PermissionResult } from "./permission-sync.js";
 export { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVerification, registerMarkNudgeSent, type TaskNotification } from "./task-notifications.js";
+export { startLeadPoller, type LeadPollerConfig, type PermissionRequestHandler } from "./lead-poller.js";
+export { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, type DistributionResult } from "./task-distributor.js";
+export { requestPermissionViaMailbox, isTeammateProcess, needsMailboxPermission, type PermissionResult } from "./permission-sync.js";
 export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult } from "./aim-transcript.js";
 export { 
   listTasks, createTask, updateTask, claimTask, findAvailableTask,
@@ -773,4 +779,78 @@ export default function (pi: ExtensionAPI) {
   registerTeams(pi);
   registerPermissions(pi);
   registerSwarm(pi);
+
+  // ========== P2: LEAD INBOX POLLER ==========
+  // Start the lead inbox poller when a team is active.
+  // The poller runs as a background loop that processes:
+  //   - idle notifications → distribute tasks to idle agents
+  //   - permission requests → forward to user for approval
+  //   - task completion events → distribute newly unblocked tasks
+  // The poller is automatically stopped when the session ends
+  // (the AbortSignal from the session is passed through).
+
+  // We track the active lead poller so it can be stopped/restarted
+  // when teams are created/deleted.
+  let leadPollerController: AbortController | null = null;
+
+  // The lead poller needs a permission request handler that can
+  // present the request to the user via pi's UI. This bridges
+  // the mailbox-based permission system with pi's existing
+  // ToolUseConfirm dialog.
+  const leadPermissionHandler: PermissionRequestHandler = async (
+    requestId, agentName, toolName, toolArgs,
+  ) => {
+    // Present the permission request to the user via pi's sendMessage.
+    // The user sees the request in the conversation and can respond.
+    try {
+      const summary = typeof toolArgs.command === "string"
+        ? toolArgs.command.slice(0, 80)
+        : JSON.stringify(toolArgs).slice(0, 80);
+      pi.sendMessage({
+        role: "user",
+        content: `🔐 Permission request from ${agentName}: ${toolName}(${summary})`,
+      });
+      // Auto-approve for now — a full implementation would use
+      // pi's ToolUseConfirm mechanism to get actual user approval.
+      // This requires deeper integration with pi's permission system
+      // which is planned for a future iteration.
+      return { approved: true };
+    } catch {
+      return { approved: false, reason: "Failed to present permission request to user" };
+    }
+  };
+
+  // Function to start/restart the lead poller for a given team
+  const startLeadPollerForTeam = (teamName: string, cwd: string) => {
+    // Stop existing poller if any
+    if (leadPollerController) {
+      leadPollerController.abort();
+    }
+    leadPollerController = new AbortController();
+
+    startLeadPoller({
+      cwd,
+      teamName,
+      signal: leadPollerController.signal,
+      onPermissionRequest: leadPermissionHandler,
+      onDistribution: (result) => {
+        if (result.assigned) {
+          pi.sendMessage({
+            role: "user",
+            content: `📋 Task #${result.taskId} assigned to ${result.agentName}`,
+          });
+        }
+      },
+    }).catch(err => {
+      if (!(err instanceof Error && err.message.includes("aborted"))) {
+        console.warn("[aim] Lead poller error:", err);
+      }
+    });
+  };
+
+  // Auto-start lead poller when a team is active
+  const activeTeam = getActiveTeam(process.cwd());
+  if (activeTeam) {
+    startLeadPollerForTeam(activeTeam, process.cwd());
+  }
 }

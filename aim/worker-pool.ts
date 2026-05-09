@@ -114,9 +114,21 @@ export class WorkerPool {
     if (!isRpc) args.push(config.prompt);
 
     const piCmd = getPiCommand();
+    // P2: Pass teammate identity via environment variables so child processes
+    // can detect they are teammates and use mailbox-based permission requests
+    // instead of trying to show local confirmation dialogs.
+    const envExtra: Record<string, string> = {};
+    if (config.name) envExtra.TEAMMATE_NAME = config.name;
+    // Team name is not in WorkerConfig directly — it's passed via the
+    // spawnTeammate flow in teams.ts which sets it on the config.
+    // We use a custom field to pass it through to the child process.
+    const teamName = (config as Record<string, unknown>).team_name as string | undefined;
+    if (teamName) envExtra.TEAMMATE_TEAM = teamName;
+
     const proc = spawn(piCmd.command, [...piCmd.args, ...args], {
       cwd: config.cwd ?? process.cwd(),
       stdio: isRpc ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...envExtra },
     });
 
     const info: WorkerInfo = {
