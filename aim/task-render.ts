@@ -21,7 +21,7 @@
 import { Container, Text, Spacer } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 // (Markdown import removed — unused)
-import { formatTokens } from "./render.js";
+import { formatTokenCount } from "./task-progress.js";
 import {
   isTerminalStatus,
   type TaskItem,
@@ -436,7 +436,7 @@ export function renderProgressInline(progress: TaskProgress, theme: Theme): stri
   const totalTokens = progress.tokenUsage.input + progress.tokenUsage.output;
 
   return theme.fg("dim",
-    `🔄 ${progress.turnCount} turns | ${progress.toolUseCount} tools | ${formatTokens(totalTokens)} tokens | ${elapsedStr}`,
+    `🔄 ${progress.turnCount} turns | ${progress.toolUseCount} tools | ${formatTokenCount(totalTokens)} tokens | ${elapsedStr}`,
   );
 }
 
@@ -457,7 +457,7 @@ export function renderProgressDetail(progress: TaskProgress, theme: Theme): Cont
   // Main progress line
   container.addChild(new Text(
     theme.fg("dim",
-      `📊 ${progress.turnCount} turns | ${progress.toolUseCount} tools | ${formatTokens(totalTokens)} tokens | ${elapsedStr}`,
+      `📊 ${progress.turnCount} turns | ${progress.toolUseCount} tools | ${formatTokenCount(totalTokens)} tokens | ${elapsedStr}`,
     ),
     0, 0,
   ));

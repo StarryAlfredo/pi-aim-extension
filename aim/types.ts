@@ -198,12 +198,18 @@ export interface TaskItem {
   /** Present-tense display text (e.g. "Running tests") */
   activeForm?: string;
   status: TaskStatus;
-  /** Agent that owns this task (undefined = unowned) */
+  /** Agent that owns this task. undefined = unowned/never assigned.
+   *  IMPORTANT: always check with != null (matches both null from legacy JSON
+   *  and undefined from current code). Never use !== undefined alone, as
+   *  deserialized legacy data may have owner: null. */
   owner?: string;
   /** IDs of tasks this task blocks (this → them) */
   blocks: string[];
   /** IDs of tasks that block this task (them → this) */
   blockedBy: string[];
+  /** Timestamp of last reference cleanup (from deleteTask). Separate from
+   *  updatedAt to avoid affecting stale/orphan detection that relies on updatedAt. */
+  refsCleanedAt?: number;
   /** Arbitrary metadata for extensibility */
   metadata?: Record<string, unknown>;
   createdAt: number;

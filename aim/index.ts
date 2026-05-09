@@ -72,7 +72,8 @@ import {
   type HookResult, type HookContext, type TaskCreatedHook, type TaskCompletedHook, type TaskTransitionHook,
   // P0/P1: Infrastructure types
   registerFindCandidateAgent, forceTaskStatus,
-  type UpdateTaskOptions, type FindCandidateAgentFn,
+  registerIsAgentBusy,
+  type UpdateTaskOptions, type FindCandidateAgentFn, type IsAgentBusyFn,
 } from "./shared-tasks.js";
 
 import {
@@ -169,7 +170,8 @@ export {
   type HookResult, type HookContext, type TaskCreatedHook, type TaskCompletedHook, type TaskTransitionHook,
   // P0/P1: Infrastructure
   registerFindCandidateAgent, forceTaskStatus,
-  type UpdateTaskOptions, type FindCandidateAgentFn,
+  registerIsAgentBusy,
+  type UpdateTaskOptions, type FindCandidateAgentFn, type IsAgentBusyFn,
 } from "./shared-tasks.js";
 
 export {
@@ -617,6 +619,11 @@ export default function (pi: ExtensionAPI) {
   // This allows shared-tasks.ts to find the least-busy idle agent for
   // unowned unblocked task notifications without importing agent-status.ts.
   registerFindCandidateAgent((cwd, team) => findLeastBusyAgent(cwd, team)?.agentId);
+
+  // Register isAgentBusy callback to break the circular dependency
+  // between shared-tasks.ts and agent-status.ts.
+  // This allows claimTask to use the centralized busy-check logic.
+  registerIsAgentBusy((cwd, team, agentName) => isAgentBusyStatus(cwd, team, agentName));
 
   // Register the nudge-sent marker callback to break the circular dependency
   // between task-notifications.ts and shared-tasks.ts.

@@ -56,6 +56,20 @@ export interface UpdateTaskOptions {
   skipHooks?: boolean;
 }
 
+/** Callback type for checking if an agent is busy.
+ *  Registered by the extension entry point (index.ts) to break the circular
+ *  dependency: shared-tasks.ts ↔ agent-status.ts */
+export type IsAgentBusyFn = (cwd: string, team: string, agentName: string) => boolean;
+
+let _isAgentBusyFn: IsAgentBusyFn | null = null;
+
+/** Register a callback to check if an agent is busy.
+ *  Called by claimTask for busy-check, replacing the inline logic.
+ *  This breaks the circular dependency: shared-tasks.ts ↔ agent-status.ts. */
+export function registerIsAgentBusy(fn: IsAgentBusyFn): void {
+  _isAgentBusyFn = fn;
+}
+
 /** Callback type for finding a candidate agent for unowned unblocked tasks.
  *  Registered by the extension entry point (index.ts) to break the circular
  *  dependency: shared-tasks.ts ↔ agent-status.ts */
@@ -559,13 +573,16 @@ export async function claimTask(
     }
 
     // Check agent is not already busy with another open task.
-    // Use != null to match both null (legacy JSON) and undefined (current).
-    const agentOpen = allTasks.filter(t =>
-      t.owner != null && t.owner === owner &&
-      !isTerminalStatus(t.status) &&
-      t.id !== taskId,
-    );
-    if (agentOpen.length > 0) {
+    // Use the registered callback if available (breaks circular dep on agent-status.ts),
+    // otherwise fall back to inline logic.
+    const isBusyCheck = _isAgentBusyFn
+      ? _isAgentBusyFn(cwd, team, owner)
+      : allTasks.some(t =>
+          t.owner != null && t.owner === owner &&
+          !isTerminalStatus(t.status) &&
+          t.id !== taskId,
+        );
+    if (isBusyCheck) {
       return { rejected: true, reason: "agent_busy" };
     }
 
@@ -736,7 +753,9 @@ export async function deleteTask(
       }
 
       if (modified) {
-        other.updatedAt = Date.now();
+        // Use refsCleanedAt instead of updatedAt to avoid affecting
+        // stale/orphan detection that relies on updatedAt.
+        other.refsCleanedAt = Date.now();
         writeTaskFile(cwd, team, other);
       }
     }
@@ -941,7 +960,13 @@ async function propagateFailureToBlocked(
     for (const item of toFail) {
       // Re-read fresh state inside the lock (may have changed since BFS scan)
       const fresh = readTaskFile(cwd, team, item.id);
-      if (!fresh || fresh.status !== "pending") continue;
+      if (!fresh) continue;
+      // Skip terminal tasks (already completed/failed/killed)
+      if (isTerminalStatus(fresh.status)) continue;
+      // Cascade-fail both pending and in_progress tasks.
+      // in_progress tasks were claimed after our BFS scan but before
+      // we acquired the lock — they should still be failed because
+      // their dependency will never be satisfied.
       fresh.status = "failed";
       fresh.metadata = { ...fresh.metadata, failureReason: item.reason };
       fresh.updatedAt = Date.now();
@@ -1050,5 +1075,5 @@ export {
 // P0/P1: Re-export options & infrastructure types
 // ============================================================================
 
-export type { UpdateTaskOptions, FindCandidateAgentFn };
+export type { UpdateTaskOptions, FindCandidateAgentFn, IsAgentBusyFn };
 

@@ -108,15 +108,22 @@ export async function distributeAvailableTasks(
 
   if (idleAgents.length === 0) return 0;
 
-  // For each idle agent, try to assign a task
+  // For each idle agent, try to assign a task.
+  // Retry up to 3 times per agent in case another agent claims the
+  // same task concurrently (claimTask is atomic but findAvailableTask
+  // is not — it always returns the lowest-ID available task).
   for (const agent of idleAgents) {
-    const available = findAvailableTask(cwd, teamName);
-    if (!available) break; // No more tasks to distribute
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const available = findAvailableTask(cwd, teamName);
+      if (!available) break; // No more tasks to distribute
 
-    const result = await claimTask(cwd, teamName, available.id, agent.agentId);
-    if ("task" in result) {
-      await notifyTaskAssignment(cwd, agent.agentId, teamName, available.id, available.subject, "task-distributor");
-      distributed++;
+      const result = await claimTask(cwd, teamName, available.id, agent.agentId);
+      if ("task" in result) {
+        await notifyTaskAssignment(cwd, agent.agentId, teamName, available.id, available.subject, "task-distributor");
+        distributed++;
+        break; // Success — move to next agent
+      }
+      // Claim failed (another agent may have claimed first) — retry with next available task
     }
   }
 

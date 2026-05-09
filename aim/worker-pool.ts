@@ -47,6 +47,19 @@ function fileExists(p: string): boolean {
 
 /** Get the pi executable path */
 function getPiCommand(): { command: string; args: string[] } {
+  // Try which/where first for cross-platform reliability
+  try {
+    const { execSync } = require("node:child_process");
+    const whichCmd = process.platform === "win32" ? "where pi" : "which pi";
+    const result = execSync(whichCmd, { encoding: "utf-8", timeout: 3000 }).trim();
+    if (result) {
+      const firstLine = result.split("\n")[0]!.trim();
+      return { command: firstLine, args: [] };
+    }
+  } catch {
+    // which/where failed — fall through to manual path resolution
+  }
+
   const execPath = process.argv[1];
   if (execPath && fileExists(execPath)) {
     return { command: process.execPath, args: [execPath] };

@@ -291,10 +291,12 @@ async function handlePermissionRequest(
     approved = result.approved;
     reason = result.reason;
   } else {
-    // Non-interactive mode: auto-approve.
-    // This is useful for testing or when the lead is running without a TUI.
-    approved = true;
-    reason = "auto_approved_non_interactive";
+    // Non-interactive mode: auto-DENY for safety.
+    // Without a permission handler, dangerous commands must be blocked
+    // to prevent unintended execution (rm -rf, sudo, etc.).
+    approved = false;
+    reason = "No permission handler registered — denied for safety. Register onPermissionRequest callback.";
+    console.warn('[aim:lead-poller] WARNING: No onPermissionRequest handler registered. Dangerous command denied by default.');
   }
 
   // Send response back to the requesting teammate

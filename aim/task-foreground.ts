@@ -468,6 +468,8 @@ function startAutoBackgroundTimer(state: TaskDisplayState): void {
     clearTimeout(state._autoBgTimer);
   }
   state._autoBgTimer = setTimeout(() => {
+    // Guard: don't auto-background completed tasks
+    if (state.completedAt) return;
     if (state.isForeground) {
       backgroundTask(state.id);
     }

@@ -119,6 +119,9 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
         task = getTask(ctx.cwd, team, taskId) ?? task;
       }
 
+      // Check if we timed out while waiting
+      const timedOut = params.wait && !isTerminalStatus(task.status) && (Date.now() - startTime > MAX_WAIT_MS - 1000);
+
       // --- Build response ---
       const lines: string[] = [];
       const statusIcon: Record<string, string> = {
@@ -129,6 +132,11 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
       lines.push(`${icon} Task #${task.id}: ${task.subject}`);
       lines.push(`   Status: ${task.status} | Owner: ${task.owner ?? "unassigned"}`);
       lines.push(`   Type: ${task.type} | Created: ${new Date(task.createdAt).toLocaleTimeString()}`);
+
+      if (timedOut) {
+        lines.push("");
+        lines.push("⚠️ Timed out waiting for task to complete (5 min). Task may still be running.");
+      }
 
       // Progress info
       const progress = getProgressTracker(taskId);

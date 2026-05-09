@@ -162,9 +162,29 @@ export async function resumeTask(
     // Non-fatal: metadata update failure shouldn't block resume
   }
 
-  // Wait for the agent to complete (or go idle in RPC mode)
+  // Wait for the agent to fully exit (close event), not just the first agent_end.
+  // In RPC mode, agent_end only means "one turn complete" — the worker stays alive
+  // waiting for more commands. We need to wait for the process to actually exit
+  // to correctly capture the final result.
   try {
-    const result = await workerPool.waitFor(workerId);
+    const CLOSE_TIMEOUT_MS = 600_000; // 10 minutes
+    const closeResult = await new Promise<WorkerInfo>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Resume timed out after ${CLOSE_TIMEOUT_MS / 1000}s`));
+      }, CLOSE_TIMEOUT_MS);
+
+      // Poll for worker death (close event sets state to "dead")
+      const check = setInterval(() => {
+        const info = workerPool.getInfo(workerId);
+        if (!info || info.state === "dead") {
+          clearInterval(check);
+          clearTimeout(timeout);
+          resolve(info!);
+        }
+      }, 500);
+    });
+
+    const result = closeResult;
     const usage = collectUsageFromMessages(result.messages);
     const finalOutput = getFinalOutput(result.messages);
 
