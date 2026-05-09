@@ -144,7 +144,7 @@ export async function spawnTeammate(
   // worker-pool.ts). This enables mailbox-based permission requests.
   const workerInfo = workerPool.getInfo(workerId);
   if (workerInfo) {
-    (workerInfo.config as Record<string, unknown>).team_name = teamName;
+    (workerInfo.config as unknown as Record<string, unknown>).team_name = teamName;
   }
 
   // Register in team file

@@ -60,7 +60,7 @@ export function registerTaskCreateTool(pi: ExtensionAPI): void {
     parameters: TaskCreateParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const team = getActiveTeam(ctx.cwd);
+      const team = getActiveTeam();
       if (!team) {
         return {
           content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
@@ -78,7 +78,7 @@ export function registerTaskCreateTool(pi: ExtensionAPI): void {
 
         const task = await createTask(
           ctx.cwd,
-          team,
+          team.name,
           params.subject,
           params.description ?? "",
           options,

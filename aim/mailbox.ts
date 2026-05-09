@@ -197,7 +197,7 @@ export function createShutdownRejection(requestId: string, from: string, reason:
 /** Create an idle notification for the leader */
 export function createIdleNotification(
   agentName: string,
-  options?: { idleReason?: "available" | "interrupted" | "failed"; summary?: string; completedTaskId?: string },
+  options?: { idleReason?: "available" | "interrupted" | "failed" | "completed"; summary?: string; completedTaskId?: string },
 ): string {
   return JSON.stringify({
     type: "idle_notification",

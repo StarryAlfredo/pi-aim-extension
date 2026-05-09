@@ -36,17 +36,18 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum, type Message } from "@mariozechner/pi-ai";
 import { Container, Text, Markdown, Spacer } from "@mariozechner/pi-tui";
 
 import { workerPool } from "./worker-pool.js";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 
-import { discoverAgents, type AgentConfig, type AgentScope } from "./agents.js";
+import { discoverAgents } from "./agents.js";
+import type { AgentConfig, AgentScope } from "./types.js";
 import { registerSendMessage } from "./send-message.js";
 import { registerCoordinator } from "./coordinator.js";
 import { createWorktree, removeWorktreeByBase } from "./worktree.js";
-import { registerTeams } from "./teams.js";
+import { registerTeams, getActiveTeam } from "./teams.js";
 import { registerPermissions } from "./permissions.js";
 import { registerSwarm } from "./swarm.js";
 // P5: Task tools
@@ -112,6 +113,7 @@ import {
 } from "./task-render.js";
 // P3: Progress tracking
 import {
+  createProgressTracker, recordToolUse, recordTokenUsage, recordTurn,
   recordStatusChange,
   removeProgressTracker,
   persistProgress, deletePersistedProgress,
@@ -344,7 +346,7 @@ async function runSingleAgent(
         input: usage.input, output: usage.output,
         cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite,
       });
-      recordTurn(params.resumeAgentId, usage.turns);
+      recordTurn(params.resumeAgentId);
       recordStatusChange(params.resumeAgentId, result.exitCode === 0 ? "completed" : "failed");
 
       // Record result in parent tree
@@ -464,10 +466,10 @@ async function runSingleAgent(
   // to record the agentId (enables resume and progress tracking)
   if ((params as Record<string, unknown>).task_id) {
     const tid = (params as Record<string, unknown>).task_id as string;
-    const activeTeam = getActiveTeam(cwd);
+    const activeTeam = getActiveTeam();
     if (activeTeam) {
       try {
-        await updateTask(cwd, activeTeam, tid, {
+        await updateTask(cwd, activeTeam.name, tid, {
           status: "in_progress",
           metadata: { agentId },
         });
@@ -517,7 +519,7 @@ async function runSingleAgent(
     // P6: Update associated task if task_id was provided
     if ((params as Record<string, unknown>).task_id) {
       const tid = (params as Record<string, unknown>).task_id as string;
-      const activeTeam = getActiveTeam(cwd);
+      const activeTeam = getActiveTeam();
       if (activeTeam) {
         try {
           const taskUpdate: Partial<Pick<TaskItem, "status" | "metadata">> = {
@@ -528,7 +530,7 @@ async function runSingleAgent(
               completedAt: Date.now(),
             },
           };
-          await updateTask(cwd, activeTeam, tid, taskUpdate);
+          await updateTask(cwd, activeTeam.name, tid, taskUpdate);
         } catch (err) {
           console.warn(`[aim] Failed to update task #${tid} after agent completion:`, err);
         }
@@ -762,7 +764,7 @@ export default function (pi: ExtensionAPI) {
         if (params.tasks.length > MAX_PARALLEL_TASKS) {
           return { content: [{ type: "text", text: `Max ${MAX_PARALLEL_TASKS} tasks.` }], details: { mode: "parallel", error: true } };
         }
-        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t) =>
+        const results = await mapWithConcurrencyLimit(params.tasks as any[], MAX_CONCURRENCY, async (t: any) =>
           runSingleAgent(pi, cwd, agents, { agent: t.agent, task: t.task, cwd: t.cwd, model: t.model, tools: t.tools }, signal, (up) => onUpdate?.({ content: [{ type: "text", text: `[parallel] ${up.agent}: ${up.status}` }], details: { mode: "parallel", ...up } }))
         );
         const ok = results.filter(r => r.exitCode === 0).length;
@@ -946,17 +948,18 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const team = getActiveTeam(ctx.cwd);
+      const team = getActiveTeam();
       if (!team) {
         return {
           content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
           isError: true,
         };
       }
+      const teamName = team.name;
 
       // --- Orphan recovery mode ---
       if (params.orphan_recovery) {
-        const result = await recoverOrphanTasks(ctx.cwd, team, {
+        const result = await recoverOrphanTasks(ctx.cwd, teamName, {
           killUnresumable: params.kill_unresumable ?? true,
           signal,
         });
@@ -988,7 +991,7 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      const result = await resumeTask(ctx.cwd, team, params.task_id, { signal });
+      const result = await resumeTask(ctx.cwd, teamName, params.task_id, { signal });
 
       if (!result.success) {
         return {
@@ -1141,9 +1144,9 @@ export default function (pi: ExtensionAPI) {
   };
 
   // Auto-start lead poller when a team is active
-  const activeTeam = getActiveTeam(process.cwd());
+  const activeTeam = getActiveTeam();
   if (activeTeam) {
-    startLeadPollerForTeam(activeTeam, process.cwd());
+    startLeadPollerForTeam(activeTeam.name, process.cwd());
   }
 
   // ========== P4: DISPLAY TRANSITION CALLBACKS ==========

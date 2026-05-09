@@ -339,7 +339,7 @@ export class WorkerPool {
 
             // Store usage from agent_end for idle notifications
             if (event.usage) {
-              (info as Record<string, unknown>).lastUsage = event.usage;
+              (info as unknown as Record<string, unknown>).lastUsage = event.usage;
               // P3: Record final token usage from agent_end
               const agentId = info.config.agentId;
               if (agentId) {

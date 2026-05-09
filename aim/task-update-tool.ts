@@ -61,13 +61,14 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
     parameters: TaskUpdateParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const team = getActiveTeam(ctx.cwd);
+      const team = getActiveTeam();
       if (!team) {
         return {
           content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
           isError: true,
         };
       }
+      const teamName = team.name;
 
       // Build updates object — only include fields that were provided
       const updates: Partial<Pick<TaskItem, "status" | "owner" | "description" | "activeForm" | "metadata">> = {};
@@ -85,7 +86,7 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
       }
 
       try {
-        const task = await updateTask(ctx.cwd, team, params.task_id, updates);
+        const task = await updateTask(ctx.cwd, teamName, params.task_id, updates);
 
         if (!task) {
           return {

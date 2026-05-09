@@ -88,7 +88,7 @@ export function registerSendMessage(pi: ExtensionAPI) {
         text: params.message,
         timestamp: new Date().toISOString(),
         summary: params.summary,
-      });
+      }, "");  // no team context for direct messages
 
       return {
         content: [{

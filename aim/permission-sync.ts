@@ -17,7 +17,7 @@
  *
  * Usage in permissions.ts:
  *   const result = await requestPermissionViaMailbox(cwd, agentName, teamName, toolName, args, signal);
- *   if (result.approved) { /* proceed */ } else { /* abort */ }
+ *   if (result.approved) { proceed } else { abort }
  */
 
 import { writeToMailbox, readUnreadMessages, markMessageAsRead } from "./mailbox.js";

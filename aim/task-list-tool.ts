@@ -59,16 +59,17 @@ export function registerTaskListTool(pi: ExtensionAPI): void {
     parameters: TaskListParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const team = getActiveTeam(ctx.cwd);
+      const team = getActiveTeam();
       if (!team) {
         return {
           content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
           isError: true,
         };
       }
+      const teamName = team.name;
 
       // Fetch all tasks
-      let tasks = listTasks(ctx.cwd, team);
+      let tasks = listTasks(ctx.cwd, teamName);
 
       // Apply filters
       if (params.status_filter) {
@@ -90,16 +91,16 @@ export function registerTaskListTool(pi: ExtensionAPI): void {
       } else {
         // Use P8 dashboard rendering for full display
         try {
-          const snapshot = getTeamStatusSnapshot(ctx.cwd, team);
-          displayText = renderDashboardText(tasks, snapshot, team);
+          const snapshot = getTeamStatusSnapshot(ctx.cwd, teamName);
+          displayText = renderDashboardText(tasks, snapshot.agents, teamName);
         } catch {
           // Fallback to simple task list if agent status unavailable
-          displayText = renderTaskListText(tasks, team);
+          displayText = renderTaskListText(tasks, teamName);
         }
       }
 
       // Summary stats (always show for the full team, not filtered)
-      const allTasks = listTasks(ctx.cwd, team);
+      const allTasks = listTasks(ctx.cwd, teamName);
       const stats = {
         total: allTasks.length,
         pending: allTasks.filter(t => t.status === "pending").length,

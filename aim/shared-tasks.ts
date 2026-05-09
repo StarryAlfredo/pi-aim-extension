@@ -1184,5 +1184,5 @@ export {
 // P0/P1: Re-export options & infrastructure types
 // ============================================================================
 
-export type { UpdateTaskOptions, FindCandidateAgentFn, IsAgentBusyFn };
+// Types UpdateTaskOptions, FindCandidateAgentFn, IsAgentBusyFn are already exported at definition site.
 

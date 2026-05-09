@@ -68,18 +68,19 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
     parameters: TaskOutputParams,
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const team = getActiveTeam(ctx.cwd);
+      const team = getActiveTeam();
       if (!team) {
         return {
           content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
           isError: true,
         };
       }
+      const teamName = team.name;
 
       const taskId = params.task_id;
 
       // --- Initial check ---
-      let task = getTask(ctx.cwd, team, taskId);
+      let task = getTask(ctx.cwd, teamName, taskId);
       if (!task) {
         return {
           content: [{ type: "text", text: `❌ Task #${taskId} not found.` }],
@@ -109,7 +110,7 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
             }
 
             // Poll task status
-            const current = getTask(ctx.cwd, team, taskId);
+            const current = getTask(ctx.cwd, teamName, taskId);
             if (!current) {
               // Task was deleted while waiting — treat as terminal
               clearInterval(interval);
@@ -123,7 +124,7 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
           }, POLL_INTERVAL_MS);
         });
 
-        task = getTask(ctx.cwd, team, taskId) ?? task;
+        task = getTask(ctx.cwd, teamName, taskId) ?? task;
       }
 
       // Check if we timed out while waiting
