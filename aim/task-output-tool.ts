@@ -13,6 +13,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { Text } from "@mariozechner/pi-tui";
 import { getTask, isTerminalStatus } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { getProgressTracker, generateProgressSummary, generateCompactSummary } from "./task-progress.js";
@@ -213,7 +214,7 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
 
     renderCall(args, theme) {
       const wait = args.wait ? theme.fg("warning", " (waiting)") : "";
-      return new (require("@mariozechner/pi-tui").Text)(
+      return new Text(
         theme.fg("toolTitle", theme.bold("task_output ")) +
         theme.fg("accent", `#${args.task_id ?? "?"}`) +
         wait,
@@ -225,9 +226,9 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
       const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
       // Use dim styling for long outputs
       if (text.length > 2000) {
-        return new (require("@mariozechner/pi-tui").Text)(theme.fg("dim", text), 0, 0);
+        return new Text(theme.fg("dim", text), 0, 0);
       }
-      return new (require("@mariozechner/pi-tui").Text)(text, 0, 0);
+      return new Text(text, 0, 0);
     },
   });
 }

@@ -13,6 +13,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { Text } from "@mariozechner/pi-tui";
 import { createTask, type CreateTaskOptions } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { type TaskType } from "./types.js";
@@ -109,7 +110,7 @@ export function registerTaskCreateTool(pi: ExtensionAPI): void {
     },
 
     renderCall(args, theme) {
-      return new (require("@mariozechner/pi-tui").Text)(
+      return new Text(
         theme.fg("toolTitle", theme.bold("task_create ")) +
         theme.fg("accent", args.subject ?? "...") +
         (args.type ? theme.fg("dim", ` [${args.type}]`) : ""),
@@ -120,7 +121,7 @@ export function registerTaskCreateTool(pi: ExtensionAPI): void {
     renderResult(result, _opts, theme) {
       const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
       const isError = result.isError;
-      return new (require("@mariozechner/pi-tui").Text)(
+      return new Text(
         isError ? theme.fg("error", text) : theme.fg("success", text),
         0, 0,
       );

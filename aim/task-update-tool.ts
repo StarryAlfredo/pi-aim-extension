@@ -13,6 +13,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { Text } from "@mariozechner/pi-tui";
 import { updateTask } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { type TaskItem, type TaskStatus } from "./types.js";
@@ -122,7 +123,7 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
       const parts: string[] = [];
       if (args.status) parts.push(`→ ${args.status}`);
       if (args.owner) parts.push(`→ ${args.owner}`);
-      return new (require("@mariozechner/pi-tui").Text)(
+      return new Text(
         theme.fg("toolTitle", theme.bold("task_update ")) +
         theme.fg("accent", `#${args.task_id ?? "?"}`) +
         (parts.length ? theme.fg("dim", ` ${parts.join(", ")}`) : ""),
@@ -133,7 +134,7 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
     renderResult(result, _opts, theme) {
       const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
       const isError = result.isError;
-      return new (require("@mariozechner/pi-tui").Text)(
+      return new Text(
         isError ? theme.fg("error", text) : theme.fg("success", text),
         0, 0,
       );

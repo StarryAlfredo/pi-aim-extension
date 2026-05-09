@@ -13,6 +13,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { Text } from "@mariozechner/pi-tui";
 import { listTasks, isTerminalStatus } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { getTeamStatusSnapshot, formatAgentStatuses, type AgentStatus } from "./agent-status.js";
@@ -124,7 +125,7 @@ export function registerTaskListTool(pi: ExtensionAPI): void {
       if (args.status_filter) filters.push(args.status_filter);
       if (args.owner_filter) filters.push(args.owner_filter);
       const filterStr = filters.length ? theme.fg("dim", ` [${filters.join(", ")}]`) : "";
-      return new (require("@mariozechner/pi-tui").Text)(
+      return new Text(
         theme.fg("toolTitle", theme.bold("task_list")) + filterStr,
         0, 0,
       );
@@ -132,7 +133,7 @@ export function registerTaskListTool(pi: ExtensionAPI): void {
 
     renderResult(result, _opts, theme) {
       const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
-      return new (require("@mariozechner/pi-tui").Text)(theme.fg("dim", text), 0, 0);
+      return new Text(theme.fg("dim", text), 0, 0);
     },
   });
 }

@@ -111,12 +111,10 @@ import {
 } from "./task-render.js";
 // P3: Progress tracking
 import {
-  createProgressTracker, recordToolUse, recordTokenUsage, recordTurn,
-  recordStatusChange, recordError, removeProgressTracker,
-  persistProgress, deletePersistedProgress, loadProgress,
-  getProgressTracker, generateProgressSummary, generateCompactSummary,
-  formatTokenUsage, formatTokenCount,
-  type TaskProgress, type TokenUsage, type ActivityEntry,
+  recordStatusChange,
+  removeProgressTracker,
+  persistProgress, deletePersistedProgress,
+  getProgressTracker, generateCompactSummary,
 } from "./task-progress.js";
 // P4: Foreground/background management
 import {
@@ -1053,6 +1051,21 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // Stale task cleanup: periodically kill orphaned in_progress tasks
+  const startStaleTaskCleanup = (teamName: string, cwd: string) => {
+    const interval = setInterval(async () => {
+      try {
+        const cleaned = await cleanupStaleTasks(cwd, teamName);
+        if (cleaned > 0) {
+          console.info(`[aim] Cleaned up ${cleaned} stale tasks`);
+        }
+      } catch (err) {
+        console.warn("[aim] Stale task cleanup failed:", err);
+      }
+    }, 1_800_000); // 30 minutes
+    return () => clearInterval(interval);
+  };
+
   // Function to start/restart the lead poller for a given team
   const startLeadPollerForTeam = (teamName: string, cwd: string) => {
     // Stop existing poller if any
@@ -1079,6 +1092,9 @@ export default function (pi: ExtensionAPI) {
         console.warn("[aim] Lead poller error:", err);
       }
     });
+
+    // Start stale task cleanup for this team
+    startStaleTaskCleanup(teamName, cwd);
   };
 
   // Auto-start lead poller when a team is active

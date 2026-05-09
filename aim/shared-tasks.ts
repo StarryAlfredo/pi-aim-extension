@@ -955,7 +955,8 @@ async function propagateFailureToBlocked(
 
   // Phase 3: Send notifications (outside the lock) using the fresh snapshot
   for (const unblockedId of toNotifyUnblocked) {
-    try { await notifyTaskUnblocked(cwd, team, unblockedId, freshSnapshot!); } catch (err) {
+    const candidate = _findCandidateAgentFn?.(cwd, team);
+    try { await notifyTaskUnblocked(cwd, team, unblockedId, freshSnapshot!, candidate); } catch (err) {
       console.warn(`[aim] Failed to notify unblocked task #${unblockedId}:`, err);
     }
   }

@@ -18,9 +18,9 @@
  *   - task-notifications.ts: uses renderTaskEvent for notification messages
  */
 
-import { Container, Text, Markdown, Spacer } from "@mariozechner/pi-tui";
+import { Container, Text, Spacer } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+// (Markdown import removed — unused)
 import { formatTokens } from "./render.js";
 import {
   isTerminalStatus,
