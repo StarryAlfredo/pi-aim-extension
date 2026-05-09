@@ -49,6 +49,13 @@ import { createWorktree, removeWorktreeByBase } from "./worktree.js";
 import { registerTeams } from "./teams.js";
 import { registerPermissions } from "./permissions.js";
 import { registerSwarm } from "./swarm.js";
+// P5: Task tools
+import { registerTaskCreateTool } from "./task-create-tool.js";
+import { registerTaskUpdateTool } from "./task-update-tool.js";
+import { registerTaskOutputTool } from "./task-output-tool.js";
+import { registerTaskListTool } from "./task-list-tool.js";
+// P6: Task resume
+import { resumeTask, findOrphanTasks, recoverOrphanTasks, type ResumeResult, type OrphanTask } from "./task-resume.js";
 import { getDisplayItems, getFinalOutput, formatToolCall, formatUsageStats, renderSubagentResult } from "./render.js";
 import {
   writeAgentMetadata, readAgentMetadata, readTranscript, appendToTranscript,
@@ -108,6 +115,13 @@ export { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVe
 export { startLeadPoller, type LeadPollerConfig, type PermissionRequestHandler } from "./lead-poller.js";
 export { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, type DistributionResult } from "./task-distributor.js";
 export { requestPermissionViaMailbox, isTeammateProcess, needsMailboxPermission, type PermissionResult } from "./permission-sync.js";
+// P5: Task tools re-exports
+export { registerTaskCreateTool } from "./task-create-tool.js";
+export { registerTaskUpdateTool } from "./task-update-tool.js";
+export { registerTaskOutputTool } from "./task-output-tool.js";
+export { registerTaskListTool } from "./task-list-tool.js";
+// P6: Task resume re-exports
+export { resumeTask, findOrphanTasks, recoverOrphanTasks, type ResumeResult, type OrphanTask } from "./task-resume.js";
 // P3: Progress tracking re-exports
 export {
   createProgressTracker, recordToolUse, recordTokenUsage, recordTurn,
@@ -233,6 +247,7 @@ async function runSingleAgent(
     agent: string; task: string; fork?: boolean; background?: boolean;
     cwd?: string; model?: string; tools?: string[]; systemPrompt?: string;
     resumeAgentId?: string;
+    task_id?: string; // P6: associate with a task
   },
   signal: AbortSignal | undefined,
   onUpdate: ((partial: { agent: string; status: string; output: string }) => void) | undefined,
@@ -397,6 +412,23 @@ async function runSingleAgent(
 
   onUpdate?.({ agent: params.agent, status: "running", output: "" });
 
+  // P6: If this agent is associated with a task, update task metadata
+  // to record the agentId (enables resume and progress tracking)
+  if ((params as Record<string, unknown>).task_id) {
+    const tid = (params as Record<string, unknown>).task_id as string;
+    const activeTeam = getActiveTeam(cwd);
+    if (activeTeam) {
+      try {
+        await updateTask(cwd, activeTeam, tid, {
+          status: "in_progress",
+          metadata: { agentId },
+        });
+      } catch (err) {
+        console.warn(`[aim] Failed to associate agent ${agentId} with task #${tid}:`, err);
+      }
+    }
+  }
+
   // P4: Create display state for this task
   const displayState = createDisplayState(agentId, {
     isForeground: !params.background,
@@ -433,6 +465,27 @@ async function runSingleAgent(
       agentId, status: result.exitCode === 0 ? "completed" : "failed",
       summary: finalOutput.slice(0, 200), usage, exitCode: result.exitCode ?? 1, model,
     });
+
+    // P6: Update associated task if task_id was provided
+    if ((params as Record<string, unknown>).task_id) {
+      const tid = (params as Record<string, unknown>).task_id as string;
+      const activeTeam = getActiveTeam(cwd);
+      if (activeTeam) {
+        try {
+          const taskUpdate: Partial<Pick<TaskItem, "status" | "metadata">> = {
+            status: result.exitCode === 0 ? "completed" : "failed",
+            metadata: {
+              agentId,
+              exitCode: result.exitCode ?? 1,
+              completedAt: Date.now(),
+            },
+          };
+          await updateTask(cwd, activeTeam, tid, taskUpdate);
+        } catch (err) {
+          console.warn(`[aim] Failed to update task #${tid} after agent completion:`, err);
+        }
+      }
+    }
 
     // P3: Persist progress to disk before cleanup
     persistProgress(cwd, agentId);
@@ -515,6 +568,8 @@ const SubagentParams = Type.Object({
   teammate_name: Type.Optional(Type.String({ description: "Name for spawned teammate" })),
   cwd: Type.Optional(Type.String({ description: "Working directory" })),
   resume: Type.Optional(Type.String({ description: "Agent ID to resume (continue previous subagent conversation)" })),
+  // P6: Task-system integration
+  task_id: Type.Optional(Type.String({ description: "Associate this subagent with a task in the team's task list (P6)" })),
 });
 
 // ============================================================================
@@ -734,6 +789,7 @@ export default function (pi: ExtensionAPI) {
           agent: params.agent, task: params.task,
           fork: params.fork, background: params.background,
           cwd: params.cwd, model: params.model,
+          task_id: params.task_id, // P6: pass task_id for task-system integration
         }, signal, (up) => onUpdate?.({ content: [{ type: "text", text: `${up.agent}: ${up.status}` }], details: { mode: "single", ...up } }));
 
         if (params.background) {
@@ -850,6 +906,118 @@ export default function (pi: ExtensionAPI) {
   registerTeams(pi);
   registerPermissions(pi);
   registerSwarm(pi);
+
+  // ========== P5: TASK TOOLS ==========
+  registerTaskCreateTool(pi);
+  registerTaskUpdateTool(pi);
+  registerTaskOutputTool(pi);
+  registerTaskListTool(pi);
+
+  // ========== P6: TASK RESUME TOOL ==========
+  pi.registerTool({
+    name: "task_resume",
+    label: "TaskResume",
+    description: [
+      "Resume an interrupted task by re-spawning its agent with existing context.",
+      "Useful after crashes or session restarts.",
+      "Only in_progress tasks can be resumed.",
+      "Also supports recovering all orphaned tasks at once (orphan_recovery=true).",
+    ].join(" "),
+    promptSnippet: "Resume an interrupted task or recover orphaned tasks",
+    promptGuidelines: [
+      "Use task_resume to continue tasks interrupted by crashes.",
+      "Set orphan_recovery=true to find and resume all stuck tasks.",
+    ],
+    parameters: Type.Object({
+      task_id: Type.Optional(Type.String({ description: "Task ID to resume" })),
+      orphan_recovery: Type.Optional(Type.Boolean({ description: "Find and recover all orphaned tasks (default: false)", default: false })),
+      kill_unresumable: Type.Optional(Type.Boolean({ description: "Kill orphans that can't be resumed (default: true)", default: true })),
+    }),
+
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const team = getActiveTeam(ctx.cwd);
+      if (!team) {
+        return {
+          content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
+          isError: true,
+        };
+      }
+
+      // --- Orphan recovery mode ---
+      if (params.orphan_recovery) {
+        const result = await recoverOrphanTasks(ctx.cwd, team, {
+          killUnresumable: params.kill_unresumable ?? true,
+          signal,
+        });
+
+        const lines: string[] = [
+          `🔧 Orphan recovery complete:`,
+          `   ✅ Resumed: ${result.resumed}`,
+          `   💀 Killed: ${result.killed}`,
+          `   ❌ Failed: ${result.failed}`,
+        ];
+
+        for (const detail of result.details) {
+          const icon = detail.action === "resumed" ? "✅" : detail.action === "killed" ? "💀" : "❌";
+          const err = detail.error ? ` (${detail.error})` : "";
+          lines.push(`   ${icon} Task #${detail.taskId}: ${detail.action}${err}`);
+        }
+
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+          details: { result },
+        };
+      }
+
+      // --- Single task resume ---
+      if (!params.task_id) {
+        return {
+          content: [{ type: "text", text: "Provide task_id or set orphan_recovery=true." }],
+          isError: true,
+        };
+      }
+
+      const result = await resumeTask(ctx.cwd, team, params.task_id, { signal });
+
+      if (!result.success) {
+        return {
+          content: [{ type: "text", text: `❌ Resume failed: ${result.error}` }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `✅ Task #${params.task_id} resumed.`,
+            `   Agent ID: ${result.agentId}`,
+            `   Status: ${result.task?.status ?? "unknown"}`,
+          ].join("\n"),
+        }],
+        details: { result },
+      };
+    },
+
+    renderCall(args, theme) {
+      if (args.orphan_recovery) {
+        return new Text(theme.fg("toolTitle", theme.bold("task_resume ")) + theme.fg("warning", "orphan recovery"), 0, 0);
+      }
+      return new Text(
+        theme.fg("toolTitle", theme.bold("task_resume ")) + theme.fg("accent", `#${args.task_id ?? "?"}`),
+        0, 0,
+      );
+    },
+
+    renderResult(result, _opts, theme) {
+      const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
+      const isError = result.isError;
+      return new Text(
+        isError ? theme.fg("error", text) : theme.fg("success", text),
+        0, 0,
+      );
+    },
+  });
 
   // ========== P2: LEAD INBOX POLLER ==========
   // Start the lead inbox poller when a team is active.
