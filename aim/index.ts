@@ -1035,20 +1035,33 @@ export default function (pi: ExtensionAPI) {
   // present the request to the user via pi's UI. This bridges
   // the mailbox-based permission system with pi's existing
   // ToolUseConfirm dialog.
+  const DANGEROUS_COMMAND_PATTERNS = /rm\s+-[a-zA-Z]*f|sudo\s|mkfs|dd\s+if|format\s|del\s+\/[sS]|\bchmod\s+777|\bchown\s+root|>\s*\/dev\/sd/i;
+
   const leadPermissionHandler: PermissionRequestHandler = async (
     requestId, agentName, toolName, toolArgs,
   ) => {
     // Present the permission request to the user via pi's sendMessage.
-    // The user sees the request in the conversation and can respond.
     try {
-      const summary = typeof toolArgs.command === "string"
-        ? toolArgs.command.slice(0, 80)
-        : JSON.stringify(toolArgs).slice(0, 80);
+      const commandStr = typeof toolArgs.command === "string"
+        ? toolArgs.command
+        : JSON.stringify(toolArgs);
+      const summary = commandStr.slice(0, 80);
+
+      // Block dangerous commands automatically — these must never be
+      // auto-approved even if a full ToolUseConfirm integration isn't ready.
+      if (DANGEROUS_COMMAND_PATTERNS.test(commandStr)) {
+        pi.sendMessage({
+          role: "user",
+          content: `🔐 ⛔ Permission DENIED from ${agentName}: ${toolName}(${summary}) — dangerous command blocked.`,
+        });
+        return { approved: false, reason: "Dangerous command blocked by safety filter" };
+      }
+
       pi.sendMessage({
         role: "user",
         content: `🔐 Permission request from ${agentName}: ${toolName}(${summary})`,
       });
-      // Auto-approve for now — a full implementation would use
+      // Auto-approve non-dangerous commands — a full implementation would use
       // pi's ToolUseConfirm mechanism to get actual user approval.
       // This requires deeper integration with pi's permission system
       // which is planned for a future iteration.
@@ -1059,6 +1072,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   // Stale task cleanup: periodically kill orphaned in_progress tasks
+  // Returns a cleanup function that clears the interval when called.
   const startStaleTaskCleanup = (teamName: string, cwd: string) => {
     const interval = setInterval(async () => {
       try {
@@ -1072,6 +1086,9 @@ export default function (pi: ExtensionAPI) {
     }, 1_800_000); // 30 minutes
     return () => clearInterval(interval);
   };
+
+  // Track cleanup handles for proper teardown on session end
+  const cleanupHandles: Array<() => void> = [];
 
   // Function to start/restart the lead poller for a given team
   const startLeadPollerForTeam = (teamName: string, cwd: string) => {
@@ -1100,8 +1117,9 @@ export default function (pi: ExtensionAPI) {
       }
     });
 
-    // Start stale task cleanup for this team
-    startStaleTaskCleanup(teamName, cwd);
+    // Start stale task cleanup for this team and save the cleanup handle
+    const cleanup = startStaleTaskCleanup(teamName, cwd);
+    cleanupHandles.push(cleanup);
   };
 
   // Auto-start lead poller when a team is active
@@ -1133,8 +1151,8 @@ export default function (pi: ExtensionAPI) {
 
   // P3+P4: Periodic cleanup of stale progress trackers and completed display states
   // P7: Also clean up old result files from disk
-  // Runs every 5 minutes
-  setInterval(() => {
+  // Runs every 5 minutes. Timer reference is tracked for cleanup on session end.
+  const periodicCleanupTimer = setInterval(() => {
     import("./task-progress.js").then(({ cleanupStaleProgress }) => {
       const progressCleaned = cleanupStaleProgress();
       const displayCleaned = cleanupCompletedDisplayStates();
@@ -1144,6 +1162,7 @@ export default function (pi: ExtensionAPI) {
       }
     });
   }, 300_000);
+  cleanupHandles.push(() => clearInterval(periodicCleanupTimer));
 
   // ========== P8: TASK EVENT MESSAGE RENDERER ==========
   // Register a custom renderer for task-system notification messages.

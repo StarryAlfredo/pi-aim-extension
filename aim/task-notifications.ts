@@ -12,6 +12,38 @@
 
 import { writeToMailbox } from "./mailbox.js";
 import { isTerminalStatus, type TaskItem } from "./types.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { getTasksDir } from "./types.js";
+
+// ============================================================================
+// Team-Level Nudge State (survives task deletion)
+// ============================================================================
+
+const NUDGE_STATE_FILE = ".nudge-state.json";
+
+interface NudgeState {
+  /** Whether verification nudge has been sent for this team */
+  verificationNudgeSent?: boolean;
+  /** Timestamp of the nudge */
+  verificationNudgeSentAt?: number;
+}
+
+function readNudgeState(cwd: string, teamName: string): NudgeState {
+  const fp = path.join(getTasksDir(cwd, teamName), NUDGE_STATE_FILE);
+  try {
+    return JSON.parse(fs.readFileSync(fp, "utf-8")) as NudgeState;
+  } catch {
+    return {};
+  }
+}
+
+function writeNudgeState(cwd: string, teamName: string, state: NudgeState): void {
+  const dir = getTasksDir(cwd, teamName);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  const fp = path.join(dir, NUDGE_STATE_FILE);
+  fs.writeFileSync(fp, JSON.stringify(state, null, 2));
+}
 
 // ============================================================================
 // Callbacks (to break circular dependencies)
@@ -153,7 +185,12 @@ export async function nudgeVerification(
   );
   if (hasVerification) return;
 
-  // Already nudged — avoid spam on every subsequent completion
+  // Check team-level nudge state first (survives task deletion)
+  const nudgeState = readNudgeState(cwd, teamName);
+  if (nudgeState.verificationNudgeSent) return;
+
+  // Legacy check: also check per-task metadata in case the team file
+  // was deleted but tasks still have the mark.
   const alreadyNudged = completed.some(t =>
     t.metadata?.verificationNudgeSent === true,
   );
@@ -169,8 +206,13 @@ export async function nudgeVerification(
     timestamp: new Date().toISOString(),
   }, teamName);
 
-  // Mark the nudge as sent on the first completed task's metadata.
-  // This prevents repeated nudge notifications on subsequent task completions.
+  // Mark nudge as sent in team-level state file (persists across task deletion)
+  writeNudgeState(cwd, teamName, {
+    verificationNudgeSent: true,
+    verificationNudgeSentAt: Date.now(),
+  });
+
+  // Also mark on the first completed task's metadata for backward compat.
   // Uses the registered callback to avoid importing shared-tasks.ts (circular dep).
   if (_markNudgeSentFn) {
     const target = completed.find(t => !t.metadata?.verificationNudgeSent);

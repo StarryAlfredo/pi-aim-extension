@@ -30,7 +30,7 @@ import { createWorktree, removeWorktreeByBase } from "./worktree.js";
 import { recordSubagentSpawn, recordSubagentResult, appendToTranscript } from "./aim-transcript.js";
 import { getFinalOutput } from "./render.js";
 import { discoverAgents } from "./agents.js";
-import type { TaskItem } from "./types.js";
+import type { TaskItem, WorkerInfo } from "./types.js";
 import type { Message } from "@mariozechner/pi-ai";
 
 // ============================================================================

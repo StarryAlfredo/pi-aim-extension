@@ -266,7 +266,9 @@ export function listTasks(cwd: string, team: string): TaskItem[] {
       if (!f.startsWith("task-") || !f.endsWith(".json")) continue;
       try {
         tasks.push(JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as TaskItem);
-      } catch {}
+      } catch (parseErr) {
+        console.warn(`[aim] Corrupted task file skipped: ${path.join(dir, f)}`, parseErr);
+      }
     }
   } catch {}
   return tasks.sort((a, b) => Number(a.id) - Number(b.id));
@@ -897,6 +899,16 @@ async function propagateFailureToBlocked(
   failedTaskId: string,
 ): Promise<void> {
   // Phase 1: BFS to collect all cascade-affected tasks (no lock needed — read-only)
+  //
+  // NOTE: The allTasks snapshot is taken outside the lock. Between Phase 1 and Phase 2,
+  // other processes may modify task files. This is acceptable because:
+  //   - Phase 2 re-reads each task file inside the lock (readTaskFile), so it uses
+  //     fresh data for the actual write.
+  //   - If a task that was "toFail" in Phase 1 has already been completed/killed by
+  //     Phase 2, the isTerminalStatus check will skip it safely.
+  //   - In extreme concurrency, a task that was pending in Phase 1 but became
+  //     in_progress by Phase 2 will still be cascade-failed — this is correct
+  //     because its dependency will never be satisfied.
   const allTasks = listTasks(cwd, team);
   const taskMap = new Map(allTasks.map(t => [t.id, t]));
   const failedTask = taskMap.get(failedTaskId);

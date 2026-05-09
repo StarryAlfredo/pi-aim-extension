@@ -112,12 +112,18 @@ export async function pollInbox(
           // For task_assigned: the agent has been assigned a specific task — claim it directly.
           // Use the taskId from the notification rather than re-searching, since the
           // assignment is intentional (from team-lead or auto-distributor).
-          if (notif.type === "task_assigned" && !isAgentBusyStatus(cwd, teamName, agentName)) {
-            const result = await claimTask(cwd, teamName, notif.taskId, agentName);
-            if ("task" in result) {
-              const prompt = `Complete task #${result.task.id}: ${result.task.subject}\n\n${result.task.description || ""}`;
-              return { type: "task_claimed", taskId: result.task.id, subject: result.task.subject, prompt };
+          if (notif.type === "task_assigned") {
+            // task_assigned means the task was already assigned (status=in_progress, owner set)
+            // by the assigner — no need to call claimTask again (it would reject since the
+            // task is no longer pending). If we are the assignee, build the prompt directly.
+            if (!isAgentBusyStatus(cwd, teamName, agentName)) {
+              const task = getTask(cwd, teamName, notif.taskId);
+              if (task && task.owner === agentName && task.status === "in_progress") {
+                const prompt = `Complete task #${task.id}: ${task.subject}\n\n${task.description || ""}`;
+                return { type: "task_claimed", taskId: task.id, subject: task.subject, prompt };
+              }
             }
+            // Task assigned to someone else or no longer actionable — skip
           }
           // For task_unblocked: a task that was blocked is now unblocked
           if (notif.type === "task_unblocked" && !isAgentBusyStatus(cwd, teamName, agentName)) {

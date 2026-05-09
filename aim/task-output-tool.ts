@@ -87,9 +87,10 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
         };
       }
 
+      const startTime = Date.now();
+
       // --- Blocking mode: wait for terminal state ---
       if (params.wait && !isTerminalStatus(task.status)) {
-        const startTime = Date.now();
 
         await new Promise<void>((resolve) => {
           const interval = setInterval(() => {

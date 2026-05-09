@@ -101,16 +101,28 @@ export function getTeamAgentStatuses(cwd: string, team: string): AgentStatus[] {
 
   // Also include team members from the team file — newly spawned teammates
   // that haven't claimed any tasks yet won't appear in task ownership data.
-  const safeName = team.replace(/[<>:"/\\|?*]/g, "_");
-  const teamFilePath = path.join(getTeamsDir(cwd), `${safeName}.json`);
+  // Use getTeamsDir consistently with teams.ts (no separate safeName logic).
+  const teamsDir = getTeamsDir(cwd);
   try {
-    const raw = fs.readFileSync(teamFilePath, "utf-8");
-    const teamFile = JSON.parse(raw) as import("./types.js").TeamFile;
-    for (const member of teamFile.members) {
-      ownerNames.add(member.name);
+    if (fs.existsSync(teamsDir)) {
+      for (const f of fs.readdirSync(teamsDir)) {
+        if (!f.endsWith(".json")) continue;
+        try {
+          const raw = fs.readFileSync(path.join(teamsDir, f), "utf-8");
+          const teamFile = JSON.parse(raw) as import("./types.js").TeamFile;
+          // Only include members from the matching team
+          if (teamFile.name === team || path.basename(f, ".json") === team) {
+            for (const member of teamFile.members) {
+              ownerNames.add(member.name);
+            }
+          }
+        } catch {
+          // Invalid team file — skip
+        }
+      }
     }
   } catch {
-    // Team file doesn't exist or is invalid — fall through to task-only discovery
+    // Teams directory doesn't exist — fall through to task-only discovery
   }
 
   return [...ownerNames].map(name => getAgentStatus(cwd, team, name));

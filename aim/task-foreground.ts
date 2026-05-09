@@ -273,8 +273,13 @@ export function foregroundTask(id: string): TransitionResult {
  */
 export function backgroundAll(): number {
   let count = 0;
-  for (const [id, state] of displayStates) {
-    if (state.isForeground) {
+  // Collect IDs first to avoid iterating a Map while modifying it.
+  // backgroundTask() only modifies fields (not deletes), but defensive
+  // programming protects against future changes.
+  const ids = Array.from(displayStates.keys());
+  for (const id of ids) {
+    const state = displayStates.get(id);
+    if (state?.isForeground) {
       const result = backgroundTask(id);
       if (result.success) count++;
     }

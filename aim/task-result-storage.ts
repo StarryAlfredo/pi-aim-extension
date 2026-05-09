@@ -298,7 +298,7 @@ export function listResultFiles(cwd: string): ResultFileMeta[] {
         const agentId = f.replace("-output.txt", "");
         results.push({
           agentId,
-          createdAt: stat.birthtimeMs,
+          createdAt: stat.birthtimeMs || stat.mtimeMs,
           sizeBytes: stat.size,
         });
       } catch {}
