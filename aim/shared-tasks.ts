@@ -35,6 +35,41 @@ import {
   type TaskType,
 } from "./types.js";
 
+import {
+  executeTaskCreatedHooks,
+  executeTaskCompletedHooks,
+  executeTaskTransitionHooks,
+  type HookContext,
+} from "./task-hooks.js";
+import { notifyTaskUnblocked, nudgeVerification, notifyTaskAssignment, notifyTaskCompleted, type TaskNotification } from "./task-notifications.js";
+import { writeToMailbox } from "./mailbox.js";
+
+// ============================================================================
+// Options & Callbacks
+// ============================================================================
+
+/** Options for updating a task */
+export interface UpdateTaskOptions {
+  /** If true, skip hook execution (infrastructure-level override).
+   *  Used by forceTaskStatus and internal fallback paths to ensure
+   *  tasks don't get stuck when hooks veto all terminal transitions. */
+  skipHooks?: boolean;
+}
+
+/** Callback type for finding a candidate agent for unowned unblocked tasks.
+ *  Registered by the extension entry point (index.ts) to break the circular
+ *  dependency: shared-tasks.ts ↔ agent-status.ts */
+export type FindCandidateAgentFn = (cwd: string, team: string) => string | undefined;
+
+let _findCandidateAgentFn: FindCandidateAgentFn | null = null;
+
+/** Register a callback to find a candidate agent for unowned unblocked tasks.
+ *  Called by updateTask when a task completes and its dependents become unblocked.
+ *  The callback should return the name of the least-busy idle agent, or undefined. */
+export function registerFindCandidateAgent(fn: FindCandidateAgentFn): void {
+  _findCandidateAgentFn = fn;
+}
+
 // Re-export for convenience
 export { isTerminalStatus, canTransition, VALID_TRANSITIONS, type TaskItem, type TaskStatus, type TaskType };
 
@@ -130,16 +165,67 @@ function listLockPath(cwd: string, team: string): string {
 function readTaskFile(cwd: string, team: string, taskId: string): TaskItem | null {
   const fp = taskFilePath(cwd, team, taskId);
   try {
-    return JSON.parse(fs.readFileSync(fp, "utf-8")) as TaskItem;
-  } catch {
-    return null;
+    const raw = fs.readFileSync(fp, "utf-8");
+    try {
+      return JSON.parse(raw) as TaskItem;
+    } catch (parseErr) {
+      // File is corrupted (partial write during crash, etc.)
+      console.warn(`[aim] Corrupted task file: ${fp}`, parseErr);
+      return null;
+    }
+  } catch (err: any) {
+    if (err.code === "ENOENT") return null; // File doesn't exist — normal
+    throw err; // Other I/O errors should bubble up
   }
 }
 
-/** Write a single task file */
+/** Write a single task file (atomic via tmp+rename) */
 function writeTaskFile(cwd: string, team: string, task: TaskItem): void {
   const fp = taskFilePath(cwd, team, task.id);
-  fs.writeFileSync(fp, JSON.stringify(task, null, 2));
+  const tmp = fp + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(task, null, 2));
+  fs.renameSync(tmp, fp);
+}
+
+// ============================================================================
+// Internal Helpers
+// ============================================================================
+
+/**
+ * Check if adding an edge from blockerId→blockedId would create a cycle
+ * in the blocks graph.
+ *
+ * Walks the blocks graph starting from blockedId (the task that will be
+ * blocked). If we can reach blockerId via existing blocks edges, then adding
+ * blockerId→blockedId would close the loop, creating a cycle.
+ *
+ * This catches both direct cycles (A→B→A) and indirect cycles (A→B→C→A).
+ *
+ * @param allTasks Map of task ID → TaskItem for the team (must be a consistent
+ *   snapshot taken inside the list lock)
+ * @param startId The task that will be blocked (we walk from here)
+ * @param targetId The blocker — if reachable from startId via blocks, it's a cycle
+ */
+function wouldCreateCycle(
+  allTasks: Map<string, TaskItem>,
+  startId: string,
+  targetId: string,
+): boolean {
+  const visited = new Set<string>();
+  const queue = [startId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current === targetId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    const task = allTasks.get(current);
+    if (task) {
+      for (const blockedId of task.blocks) {
+        queue.push(blockedId);
+      }
+    }
+  }
+  return false;
 }
 
 // ============================================================================
@@ -225,28 +311,51 @@ export async function createTask(
       updatedAt: Date.now(),
     };
 
-    // Validate all blockedBy references exist before writing
+    writeTaskFile(cwd, team, task);
+
+    // Validate blockedBy references and maintain reverse blocks[] in one pass
     if (task.blockedBy.length > 0) {
       for (const blockerId of task.blockedBy) {
         const blocker = readTaskFile(cwd, team, blockerId);
         if (!blocker) {
           throw new Error(`Cannot create task: blocker #${blockerId} does not exist`);
         }
-      }
-    }
-
-    writeTaskFile(cwd, team, task);
-
-    // Bidirectional: if blockedBy is set, update each blocker's blocks[]
-    if (task.blockedBy.length > 0) {
-      for (const blockerId of task.blockedBy) {
-        const blocker = readTaskFile(cwd, team, blockerId);
-        if (!blocker.blocks.includes(nextId)) {
+        // Only maintain reverse reference on non-terminal blockers.
+        // Terminal blockers have already satisfied the dependency.
+        if (!isTerminalStatus(blocker.status) && !blocker.blocks.includes(nextId)) {
           blocker.blocks.push(nextId);
           blocker.updatedAt = Date.now();
           writeTaskFile(cwd, team, blocker);
         }
       }
+    }
+
+    // P1: Execute created hooks — if any hook vetos, delete the task and throw
+    const hookCtx: HookContext = { cwd, team };
+    const hookResult = await executeTaskCreatedHooks(task, hookCtx);
+    if (!hookResult.allowed) {
+      // Rollback: delete task file, clean up blocker references.
+      // Collect rollback errors but don't abort the rollback — best-effort cleanup.
+      const rollbackErrors: string[] = [];
+      try { fs.unlinkSync(taskFilePath(cwd, team, nextId)); } catch (e: any) {
+        rollbackErrors.push(`Failed to delete task file: ${e.message}`);
+      }
+      for (const blockerId of task.blockedBy) {
+        try {
+          const blocker = readTaskFile(cwd, team, blockerId);
+          if (blocker) {
+            blocker.blocks = blocker.blocks.filter(id => id !== nextId);
+            blocker.updatedAt = Date.now();
+            writeTaskFile(cwd, team, blocker);
+          }
+        } catch (e: any) {
+          rollbackErrors.push(`Failed to clean blocker #${blockerId}: ${e.message}`);
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        console.warn(`[aim] Partial rollback when reverting task #${nextId}: ${rollbackErrors.join("; ")}`);
+      }
+      throw new Error(`Task creation blocked by hook: ${hookResult.reason}`);
     }
 
     return task;
@@ -267,20 +376,40 @@ export async function updateTask(
   team: string,
   taskId: string,
   updates: Partial<Pick<TaskItem, "status" | "owner" | "description" | "activeForm" | "metadata">>,
+  options?: UpdateTaskOptions,
 ): Promise<TaskItem | null> {
-  const fp = taskFilePath(cwd, team, taskId);
+  // Post-lock actions: collected during the locked section, executed after
+  // the lock is released. This prevents deadlocks when notifications or
+  // failure propagation need to acquire the same list lock.
+  const postLockActions: (() => Promise<void>)[] = [];
+  let result: TaskItem | null = null;
 
-  // Strategy B: list lock serializes all write operations
   const release = await lock(listLockPath(cwd, team));
   try {
     // TOCTOU-safe: check existence inside the lock
+    const fp = taskFilePath(cwd, team, taskId);
     if (!fs.existsSync(fp)) return null;
 
     const task = JSON.parse(fs.readFileSync(fp, "utf-8")) as TaskItem;
 
-    // Terminal state protection: reject all mutations on completed/failed/killed tasks
+    // Terminal state protection: reject business-field mutations on completed/failed/killed tasks.
+    // metadata updates are allowed on terminal tasks (e.g. recording completion metrics).
     if (isTerminalStatus(task.status)) {
-      throw new Error(`Cannot update task #${taskId}: status is "${task.status}" (terminal)`);
+      const hasBusinessChange = updates.status !== undefined ||
+        updates.owner !== undefined ||
+        updates.description !== undefined ||
+        updates.activeForm !== undefined;
+      if (hasBusinessChange) {
+        throw new Error(`Cannot update task #${taskId}: status is "${task.status}" (terminal). Only metadata updates are allowed.`);
+      }
+      // Allow metadata-only updates on terminal tasks
+      if (updates.metadata !== undefined) {
+        task.metadata = updates.metadata;
+        task.updatedAt = Date.now();
+        writeTaskFile(cwd, team, task);
+        return task;
+      }
+      return null;
     }
 
     // State transition validation
@@ -291,7 +420,37 @@ export async function updateTask(
           ` (allowed: ${VALID_TRANSITIONS[task.status]?.join(", ") ?? "none"})`,
         );
       }
+
+      // P1: Execute hooks unless skipHooks is set (infrastructure-level override).
+      // skipHooks is used by forceTaskStatus and internal fallback paths to ensure
+      // tasks don't get stuck when hooks veto all terminal transitions.
+      if (!options?.skipHooks) {
+        const hookCtx: HookContext = { cwd, team };
+
+        // P1: Execute completed hooks FIRST for terminal transitions.
+        // Completed hooks are more specific business rules ("is this task actually
+        // done?") and should veto before the broader transition hooks run.
+        if (isTerminalStatus(updates.status)) {
+          const completedResult = await executeTaskCompletedHooks(task, updates.status, hookCtx);
+          if (!completedResult.allowed) {
+            throw new Error(
+              `Task #${taskId} completion blocked by hook: ${completedResult.reason}`,
+            );
+          }
+        }
+
+        // P1: Then execute transition hooks for any status change (broader rule).
+        const transitionResult = await executeTaskTransitionHooks(task, task.status, updates.status, hookCtx);
+        if (!transitionResult.allowed) {
+          throw new Error(
+            `Status transition for task #${taskId} blocked by hook: ${transitionResult.reason}`,
+          );
+        }
+      }
     }
+
+    // Capture the previous owner before applying updates (for assignment notification)
+    const previousOwner = task.owner;
 
     // Apply updates
     if (updates.status !== undefined) task.status = updates.status;
@@ -299,14 +458,54 @@ export async function updateTask(
     if (updates.description !== undefined) task.description = updates.description;
     if (updates.activeForm !== undefined) task.activeForm = updates.activeForm;
     if (updates.metadata !== undefined) task.metadata = updates.metadata;
+
+
+
     task.updatedAt = Date.now();
 
     writeTaskFile(cwd, team, task);
+    result = task;
 
-    return task;
+    // Collect post-lock side effects (notifications, propagation).
+    // These must run outside the lock to avoid deadlock — they may need
+    // to acquire the same list lock (e.g. propagateFailureToBlocked → lock).
+    if (updates.owner !== undefined && updates.owner !== previousOwner && !isTerminalStatus(task.status)) {
+      const owner = updates.owner;
+      postLockActions.push(() => notifyTaskAssignment(cwd, owner, team, taskId, task.subject, "team-lead"));
+    }
+
+    if (isTerminalStatus(task.status)) {
+      // Capture task snapshot inside lock for consistent view.
+      // Pass to notification functions to break the circular dependency
+      // (task-notifications.ts no longer calls listTasks from shared-tasks.ts).
+      const taskSnapshot = listTasks(cwd, team);
+
+      if (task.status === "completed") {
+        // Find candidate agent for unowned unblocked tasks (breaks circular dep on agent-status.ts)
+        const candidateAgent = _findCandidateAgentFn?.(cwd, team);
+        postLockActions.push(() => notifyTaskUnblocked(cwd, team, taskId, taskSnapshot, candidateAgent));
+        postLockActions.push(() => nudgeVerification(cwd, team, taskSnapshot));
+        // Notify team leader that this task completed (for coordinator awareness)
+        postLockActions.push(() => notifyTaskCompleted(cwd, team, taskId, task.owner ?? "unknown"));
+      } else {
+        postLockActions.push(() => propagateFailureToBlocked(cwd, team, taskId));
+      }
+    }
   } finally {
     await release();
   }
+
+  // Execute post-lock actions outside the critical section.
+  // Errors here are non-fatal — the task update itself has already succeeded.
+  for (const action of postLockActions) {
+    try {
+      await action();
+    } catch (err) {
+      console.warn(`[aim] Post-lock action failed for task #${taskId}:`, err);
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -342,11 +541,19 @@ export async function claimTask(
       return { rejected: true, reason: `task_status_is_${task.status}` };
     }
 
-    // Check all blockers are completed
+    // Must be unowned (no agent has been assigned yet)
+    if (task.owner != null) {
+      return { rejected: true, reason: `already_owned_by_${task.owner}` };
+    }
+
+    // Check all blockers are completed.
+    // Dangling references (blocker deleted) are treated as unblocked,
+    // consistent with findAvailableTask's semantics.
     const allTasks = listTasks(cwd, team);
     for (const blockerId of task.blockedBy) {
       const blocker = allTasks.find(t => t.id === blockerId);
-      if (!blocker || blocker.status !== "completed") {
+      if (!blocker) continue; // dangling → unblocked
+      if (blocker.status !== "completed") {
         return { rejected: true, reason: `blocked_by_${blockerId}` };
       }
     }
@@ -393,10 +600,22 @@ export async function blockTask(
   ensureDir(dir);
   const release = await lock(listLockPath(cwd, team));
   try {
+    // Self-dependency check
+    if (blockerId === blockedId) {
+      throw new Error(`Cannot block: task #${blockerId} cannot block itself`);
+    }
+
     const blocker = readTaskFile(cwd, team, blockerId);
     const blocked = readTaskFile(cwd, team, blockedId);
     if (!blocker) throw new Error(`Task #${blockerId} not found`);
     if (!blocked) throw new Error(`Task #${blockedId} not found`);
+
+    // Circular dependency check: walk the blocks graph from blockedId —
+    // if we can reach blockerId, adding blocker→blocked would create a cycle.
+    const allTasksMap = new Map(listTasks(cwd, team).map(t => [t.id, t]));
+    if (wouldCreateCycle(allTasksMap, blockedId, blockerId)) {
+      throw new Error(`Cannot block: would create circular dependency involving #${blockerId} and #${blockedId}`);
+    }
 
     // Validation: terminal tasks should not block new tasks
     if (isTerminalStatus(blocker.status)) {
@@ -482,6 +701,7 @@ export async function deleteTask(
   cwd: string,
   team: string,
   taskId: string,
+  options?: { force?: boolean },
 ): Promise<boolean> {
   const dir = getTasksDir(cwd, team);
   if (!fs.existsSync(dir)) return false;
@@ -490,7 +710,13 @@ export async function deleteTask(
   try {
     // TOCTOU-safe: check existence inside the lock
     const fp = taskFilePath(cwd, team, taskId);
-    if (!fs.existsSync(fp)) return false;
+    
+    // Terminal state protection: reject deletion of non-terminal tasks unless force
+    const task = readTaskFile(cwd, team, taskId);
+    if (!task) return false;
+    if (!options?.force && !isTerminalStatus(task.status)) {
+      throw new Error(`Cannot delete task #${taskId}: status is "${task.status}" (use force to override)`);
+    }
     // Clean up references in other tasks.
     // Note: we intentionally modify terminal-state tasks here — this is
     // reference cleanup (not a business mutation), ensuring no dangling
@@ -521,6 +747,37 @@ export async function deleteTask(
   } finally {
     await release();
   }
+}
+
+// ============================================================================
+// Public API — Infrastructure-Level Operations
+// ============================================================================
+
+/**
+ * Force-set a task's status to a terminal state, bypassing hooks.
+ *
+ * This is an infrastructure-level safety valve for situations where normal
+ * updateTask would be vetoed by hooks (e.g. a completion hook that requires
+ * verification, but the worker has already gone idle and can't verify).
+ *
+ * Still acquires the list lock, validates state transitions, and triggers
+ * post-lock side effects (notifications, failure propagation). Only the hook
+ * execution is skipped.
+ *
+ * @returns The updated task, or null if the task doesn't exist or is already terminal.
+ */
+export async function forceTaskStatus(
+  cwd: string,
+  team: string,
+  taskId: string,
+  status: "failed" | "killed",
+  reason?: string,
+): Promise<TaskItem | null> {
+  const updates: Partial<Pick<TaskItem, "status" | "metadata">> = { status };
+  if (reason) {
+    updates.metadata = { forceReason: reason };
+  }
+  return updateTask(cwd, team, taskId, updates, { skipHooks: true });
 }
 
 // ============================================================================
@@ -593,3 +850,204 @@ export function isAgentBusy(cwd: string, team: string, agentName: string): boole
 export function getAgentTasks(cwd: string, team: string, agentName: string): TaskItem[] {
   return listTasks(cwd, team).filter(t => t.owner != null && t.owner === agentName);
 }
+
+// ============================================================================
+// Public API — Failure Propagation
+// ============================================================================
+
+/**
+ * Propagate failure to all tasks blocked by a failed/killed task.
+ *
+ * When a blocker reaches a non-completed terminal state (failed or killed),
+ * its dependent tasks cannot proceed — the dependency will never be satisfied.
+ * Instead of just unblocking them (which would let them start work that is
+ * doomed to fail), we cascade the failure.
+ *
+ * Uses BFS to collect ALL cascade-affected tasks in one pass, then writes
+ * them in a single locked section. This avoids the previous recursive
+ * approach that called updateTask() (which acquires the same list lock
+ * → deadlock) and also avoids deep call stacks on long dependency chains.
+ *
+ * System-level cascade: failed transitions are written directly to disk
+ * without running hooks, since this is infrastructure-level bookkeeping
+ * (mirrors Claude Code's design where dependency failure cascades bypass hooks).
+ */
+async function propagateFailureToBlocked(
+  cwd: string,
+  team: string,
+  failedTaskId: string,
+): Promise<void> {
+  // Phase 1: BFS to collect all cascade-affected tasks (no lock needed — read-only)
+  const allTasks = listTasks(cwd, team);
+  const taskMap = new Map(allTasks.map(t => [t.id, t]));
+  const failedTask = taskMap.get(failedTaskId);
+  if (!failedTask || failedTask.blocks.length === 0) return;
+
+  const toFail: { id: string; reason: string }[] = [];
+  const toNotifyUnblocked: string[] = [];
+  const visited = new Set<string>();
+  const queue: string[] = [failedTaskId];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    if (visited.has(currentId)) continue;
+    visited.add(currentId);
+    const current = taskMap.get(currentId);
+    if (!current) continue;
+
+    for (const blockedId of current.blocks) {
+      if (visited.has(blockedId)) continue;
+      const blocked = taskMap.get(blockedId);
+      if (!blocked || blocked.status !== "pending") continue;
+
+      // Check ALL blockers for this task
+      let allTerminal = true;
+      let hasFailedBlocker = false;
+      for (const bid of blocked.blockedBy) {
+        const blocker = taskMap.get(bid);
+        if (!blocker) continue; // dangling → treat as unblocked
+        if (!isTerminalStatus(blocker.status)) {
+          allTerminal = false;
+          break;
+        }
+        if (blocker.status !== "completed") {
+          hasFailedBlocker = true;
+        }
+      }
+
+      if (allTerminal && hasFailedBlocker) {
+        // Cascade failure — will be written in batch below
+        toFail.push({ id: blockedId, reason: `Dependency #${failedTaskId} failed` });
+        // Continue BFS: this newly-failed task may block others
+        queue.push(blockedId);
+      } else if (allTerminal && !hasFailedBlocker) {
+        // All blockers completed successfully → task is fully unblocked
+        toNotifyUnblocked.push(blockedId);
+      }
+    }
+  }
+
+  if (toFail.length === 0 && toNotifyUnblocked.length === 0) return;
+
+  // Phase 2: Batch write all cascade failures under a single lock acquisition.
+  // Also capture a fresh task snapshot inside the lock for Phase 3 notifications.
+  // This ensures notifications use consistent data, not the potentially-stale
+  // allTasks from Phase 1's lockless BFS scan.
+  let freshSnapshot: TaskItem[];
+  const dir = getTasksDir(cwd, team);
+  ensureDir(dir);
+  const release = await lock(listLockPath(cwd, team));
+  try {
+    for (const item of toFail) {
+      // Re-read fresh state inside the lock (may have changed since BFS scan)
+      const fresh = readTaskFile(cwd, team, item.id);
+      if (!fresh || fresh.status !== "pending") continue;
+      fresh.status = "failed";
+      fresh.metadata = { ...fresh.metadata, failureReason: item.reason };
+      fresh.updatedAt = Date.now();
+      writeTaskFile(cwd, team, fresh);
+    }
+    // Capture fresh snapshot inside the lock for notification accuracy
+    freshSnapshot = listTasks(cwd, team);
+  } finally {
+    await release();
+  }
+
+  // Phase 3: Send notifications (outside the lock) using the fresh snapshot
+  for (const unblockedId of toNotifyUnblocked) {
+    try { await notifyTaskUnblocked(cwd, team, unblockedId, freshSnapshot!); } catch (err) {
+      console.warn(`[aim] Failed to notify unblocked task #${unblockedId}:`, err);
+    }
+  }
+
+  // Notify owners of cascade-failed tasks
+  // Use the fresh snapshot to get accurate owner info
+  const freshTaskMap = new Map((freshSnapshot!).map(t => [t.id, t]));
+  for (const item of toFail) {
+    const task = freshTaskMap.get(item.id);
+    if (task?.owner) {
+      try {
+        const notif: TaskNotification = {
+          type: "task_failed",
+          taskId: item.id,
+          failedBy: failedTaskId,
+          reason: item.reason,
+        };
+        await writeToMailbox(cwd, task.owner, {
+          from: "task-system",
+          text: JSON.stringify(notif),
+          timestamp: new Date().toISOString(),
+        }, team);
+      } catch (err) {
+        console.warn(`[aim] Failed to notify owner of failed task #${item.id}:`, err);
+      }
+    }
+  }
+}
+
+/**
+ * Clean up stale in-progress tasks.
+ *
+ * Tasks that have been in_progress for longer than `maxAgeMs` are likely
+ * orphaned (the agent processing them crashed or disconnected). This function
+ * transitions them to "killed" status so they can be deleted or reclaimed.
+ *
+ * This mirrors Claude Code's orphan detection mechanism.
+ *
+ * @param maxAgeMs Maximum age in milliseconds for an in_progress task.
+ *   Default: 30 minutes (1_800_000 ms).
+ * @returns Number of tasks that were cleaned up.
+ */
+export async function cleanupStaleTasks(
+  cwd: string,
+  team: string,
+  maxAgeMs = 1_800_000, // 30 minutes
+  options?: { autoDelete?: boolean },
+): Promise<number> {
+  const now = Date.now();
+  const tasks = listTasks(cwd, team);
+  let cleaned = 0;
+
+  for (const task of tasks) {
+    if (task.status !== "in_progress") continue;
+    const age = now - task.updatedAt;
+    if (age > maxAgeMs) {
+      try {
+        await updateTask(cwd, team, task.id, {
+          status: "killed",
+          metadata: { ...task.metadata, killReason: "stale", staleAgeMs: age },
+        });
+        if (options?.autoDelete) {
+          await deleteTask(cwd, team, task.id, { force: true });
+        }
+        cleaned++;
+      } catch {
+        // Hook veto or other error — skip this task
+      }
+    }
+  }
+
+  return cleaned;
+}
+
+// ============================================================================
+// P1: Re-export hook types for convenience
+// ============================================================================
+
+export {
+  registerTaskCreatedHook,
+  registerTaskCompletedHook,
+  registerTaskTransitionHook,
+  type HookResult,
+  type HookContext,
+  type TaskCreatedHook,
+  type TaskCompletedHook,
+  type TaskTransitionHook,
+} from "./task-hooks.js";
+
+// ============================================================================
+// P0/P1: Re-export options & infrastructure types
+// ============================================================================
+
+export type { UpdateTaskOptions, FindCandidateAgentFn };
+

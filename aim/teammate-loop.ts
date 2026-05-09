@@ -12,6 +12,7 @@
 
 import { pollInbox, sendIdleNotification, type PollResult } from "./poller.js";
 import { workerPool } from "./worker-pool.js";
+import { updateTask, forceTaskStatus } from "./shared-tasks.js";
 import type { WorkerInfo } from "./types.js";
 
 // ============================================================================
@@ -25,6 +26,8 @@ export interface TeammateLoopConfig {
   workerId: string;
   /** Abort signal for stopping the loop */
   signal: AbortSignal;
+  /** Optional task ID to auto-complete when the worker finishes work */
+  taskId?: string;
   /** Called when the teammate starts processing a new item */
   onActivity?: (item: PollResult) => void;
   /** Called when the teammate enters idle state */
@@ -50,10 +53,19 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
   const { cwd, agentName, teamName, workerId, signal } = config;
   const POLL_GAP_MS = 500;
 
+  // Track the currently active task ID for auto-completion.
+  // Set when a task is claimed via poller, cleared when auto-completed.
+  // This bridges the gap where teams.ts doesn't pass taskId in the config —
+  // the loop discovers the task through the poller instead.
+  let activeTaskId: string | undefined = config.taskId;
+
   while (!signal.aborted) {
     // Wait for worker to become idle (completed current task)
     const info = workerPool.getInfo(workerId);
     if (!info || info.state === "dead") return;
+
+    // Track whether the worker just transitioned from running → idle (normal completion)
+    let justCompletedWork = false;
 
     // If worker is running, wait for it to finish
     if (info.state === "running") {
@@ -69,6 +81,39 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
         }, 200);
       });
       if (signal.aborted) return;
+
+      // Check the final state — distinguish normal completion from crash
+      const finalInfo = workerPool.getInfo(workerId);
+      const completedNormally = finalInfo?.state === "idle";
+      justCompletedWork = completedNormally;
+
+      // Auto-complete or fail the associated task now that the worker has finished.
+      if (activeTaskId) {
+        if (completedNormally) {
+          // Normal completion — try to mark task as completed
+          try {
+            await updateTask(cwd, teamName, activeTaskId, { status: "completed" });
+          } catch (completedErr: any) {
+            // Completion hook vetoed (e.g. verification not done) — force to failed.
+            console.warn(`[aim] Hook vetoed completion of task #${activeTaskId}: ${completedErr.message}. Forcing failed status.`);
+            try {
+              await forceTaskStatus(cwd, teamName, activeTaskId, "failed", `completion_hook_veto: ${completedErr.message}`);
+            } catch (forceErr: any) {
+              console.error(`[aim] CRITICAL: Failed to force-fail task #${activeTaskId}: ${forceErr.message}. Task may be stuck in_progress.`);
+            }
+          }
+        } else {
+          // Worker crashed or died — force the task to failed
+          console.warn(`[aim] Worker died while processing task #${activeTaskId}. Forcing failed status.`);
+          try {
+            await forceTaskStatus(cwd, teamName, activeTaskId, "failed", "worker_died");
+          } catch (forceErr: any) {
+            console.error(`[aim] CRITICAL: Failed to force-fail task #${activeTaskId}: ${forceErr.message}. Task may be stuck in_progress.`);
+          }
+        }
+        // Clear the active task after completion attempt (success or forced failure)
+        activeTaskId = undefined;
+      }
     }
 
     // Worker is now idle. Check if there's work to do.
@@ -94,9 +139,30 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
 
       case "task_claimed": {
         config.onActivity?.(result);
+        // Track the claimed task for auto-completion when the worker finishes.
+        // This ensures tasks are marked completed even when taskId wasn't
+        // passed in the initial config (e.g. via spawnTeammate in teams.ts).
+        activeTaskId = result.taskId;
         // Inject the task as a new prompt
         const injected = workerPool.followUp(workerId, result.prompt);
         if (!injected) return;
+        break;
+      }
+
+      case "task_notification": {
+        // Task system notification (assignment, unblocked, verification nudge).
+        // Log the notification but don't inject anything into the worker —
+        // the poller already attempted to claim a task if appropriate.
+        config.onActivity?.(result);
+        // If this was a task_assigned that the poller couldn't claim (e.g. agent busy),
+        // just acknowledge and continue polling.
+        break;
+      }
+
+      case "task_unblocked": {
+        // A dependency task completed — new tasks may be available.
+        config.onActivity?.(result);
+        // Re-poll immediately: the unblocked task may be claimable
         break;
       }
 
@@ -106,9 +172,10 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
       // Nothing found — sleep and retry
       default: {
         config.onIdle?.();
-        // Send idle notification once per idle cycle
+        // Send idle notification once per idle cycle.
+        // If the worker just completed work, indicate that in the notification.
         await sendIdleNotification(cwd, agentName, teamName, {
-          idleReason: "available",
+          idleReason: justCompletedWork ? "completed" : "available",
         });
         await new Promise(r => setTimeout(r, POLL_GAP_MS));
         break;

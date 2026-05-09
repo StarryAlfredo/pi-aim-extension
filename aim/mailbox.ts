@@ -19,25 +19,32 @@ import { getInboxesDir } from "./types.js";
 // Locking
 // ============================================================================
 
-/** Acquire a file lock for the given file path. Returns unlock function. */
+/** Acquire a file lock for the given file path. Returns unlock function.
+ *  Stale locks (>10s old) are force-released automatically. */
 async function lock(filePath: string): Promise<() => Promise<void>> {
-  // Use simple retry-based locking: poll until lock file disappears
   const lockPath = filePath + ".lock";
-  const maxRetries = 30;
-  const retryDelay = 50;
-
-  for (let i = 0; i < maxRetries; i++) {
+  const MAX_LOCK_RETRIES = 30;
+  const STALE_LOCK_MS = 10_000;
+  for (let i = 0; i < MAX_LOCK_RETRIES; i++) {
     try {
       fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
       return async () => {
-        try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+        try { fs.unlinkSync(lockPath); } catch {}
       };
     } catch {
-      // Lock exists, wait and retry
-      await new Promise((r) => setTimeout(r, retryDelay + Math.random() * 50));
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+          try { fs.unlinkSync(lockPath); } catch {}
+          continue;
+        }
+      } catch {
+        // Lock was released between our failed write and stat — retry
+      }
+      await new Promise(r => setTimeout(r, 50 + Math.random() * 50));
     }
   }
-  throw new Error(`Could not acquire lock for ${filePath} after ${maxRetries} retries`);
+  throw new Error(`Could not acquire lock for ${filePath}`);
 }
 
 // ============================================================================

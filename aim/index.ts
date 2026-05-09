@@ -1,5 +1,5 @@
 /**
- * AIM — Multi-Agent Orchestration
+ * AIM - Multi-Agent Orchestration
  *
  * Core extension providing multi-agent capabilities to pi coding agent.
  * Gives LLM the ability to spawn, coordinate, and communicate with child agents.
@@ -54,12 +54,25 @@ import {
   writeAgentMetadata, readAgentMetadata, readTranscript, appendToTranscript,
   recordSubagentSpawn, recordSubagentResult,
 } from "./aim-transcript.js";
-import { 
+import {
   listTasks, createTask, updateTask, claimTask, findAvailableTask,
   deleteTask, blockTask, unblockTask, findUnblockedTasks, isAgentBusy, getAgentTasks, getTask,
-  isTerminalStatus, canTransition, VALID_TRANSITIONS, 
+  cleanupStaleTasks,
+  isTerminalStatus, canTransition, VALID_TRANSITIONS,
   type TaskItem, type TaskStatus, type TaskType, type CreateTaskOptions,
+  // P1: Hook system re-exports
+  registerTaskCreatedHook, registerTaskCompletedHook, registerTaskTransitionHook,
+  type HookResult, type HookContext, type TaskCreatedHook, type TaskCompletedHook, type TaskTransitionHook,
+  // P0/P1: Infrastructure types
+  registerFindCandidateAgent, forceTaskStatus,
+  type UpdateTaskOptions, type FindCandidateAgentFn,
 } from "./shared-tasks.js";
+
+import {
+  isAgentBusyStatus, getAgentStatus, getTeamAgentStatuses, getTeamStatusSnapshot,
+  findLeastBusyAgent, getAgentOpenTasks, formatAgentStatuses,
+  type AgentStatus, type AgentBusyState, type TeamAgentStatusSnapshot,
+} from "./agent-status.js";
 
 // Re-export for other extensions
 export { workerPool } from "./worker-pool.js";
@@ -67,13 +80,28 @@ export { readMailbox, writeToMailbox, markMessageAsRead, isShutdownRequest, isPe
 export { discoverAgents, formatAgentList } from "./agents.js";
 export { createTeam, deleteTeam, spawnTeammate, getActiveTeam } from "./teams.js";
 export { pollInbox, sendIdleNotification } from "./poller.js";
+import { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVerification, registerMarkNudgeSent, type TaskNotification } from "./task-notifications.js";
+export { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVerification, registerMarkNudgeSent, type TaskNotification } from "./task-notifications.js";
 export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult } from "./aim-transcript.js";
 export { 
   listTasks, createTask, updateTask, claimTask, findAvailableTask,
   deleteTask, blockTask, unblockTask, findUnblockedTasks, isAgentBusy, getAgentTasks, getTask,
+  cleanupStaleTasks,
   isTerminalStatus, canTransition, VALID_TRANSITIONS,
   type TaskItem, type TaskStatus, type TaskType, type CreateTaskOptions,
+  // P1: Hook system
+  registerTaskCreatedHook, registerTaskCompletedHook, registerTaskTransitionHook,
+  type HookResult, type HookContext, type TaskCreatedHook, type TaskCompletedHook, type TaskTransitionHook,
+  // P0/P1: Infrastructure
+  registerFindCandidateAgent, forceTaskStatus,
+  type UpdateTaskOptions, type FindCandidateAgentFn,
 } from "./shared-tasks.js";
+
+export {
+  isAgentBusyStatus, getAgentStatus, getTeamAgentStatuses, getTeamStatusSnapshot,
+  findLeastBusyAgent, getAgentOpenTasks, formatAgentStatuses,
+  type AgentStatus, type AgentBusyState, type TeamAgentStatusSnapshot,
+} from "./agent-status.js";
 export { parseStructuredMessage, createPlanApprovalRequest, createPlanApprovalResponse } from "./mailbox.js";
 export type { WorkerConfig, WorkerInfo, AgentConfig, AgentScope, AgentDiscoveryResult, TeammateMessage, TeamFile, TeamMember, SubagentSpawnData, SubagentResultData } from "./types.js";
 
@@ -418,8 +446,25 @@ const SubagentParams = Type.Object({
 
 export default function (pi: ExtensionAPI) {
 
+  // Register the FindCandidateAgent callback to break the circular dependency
+  // between shared-tasks.ts and agent-status.ts.
+  // This allows shared-tasks.ts to find the least-busy idle agent for
+  // unowned unblocked task notifications without importing agent-status.ts.
+  registerFindCandidateAgent((cwd, team) => findLeastBusyAgent(cwd, team)?.agentId);
+
+  // Register the nudge-sent marker callback to break the circular dependency
+  // between task-notifications.ts and shared-tasks.ts.
+  registerMarkNudgeSent(async (cwd, team, taskId) => {
+    const task = getTask(cwd, team, taskId);
+    if (task) {
+      await updateTask(cwd, team, taskId, {
+        metadata: { ...task.metadata, verificationNudgeSent: true },
+      });
+    }
+  });
+
   // Clean up stale worktrees from previous crashed sessions
-  // (runs once on extension init — see worktree.ts)
+  // (runs once on extension init - see worktree.ts)
   import("./worktree.js").then(({ cleanupStaleWorktrees }) => {
     try { cleanupStaleWorktrees(process.cwd()); } catch {}
   });
@@ -441,9 +486,9 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Use subagent for complex, multi-step tasks that benefit from isolated context.",
       "Run independent subagents in parallel (tasks array) to maximize throughput (max 4 concurrent).",
-      "Use fork:true for research tasks — the subagent inherits your context.",
-      "Use background:true for long tasks — results arrive via notification.",
-      "Use resume:<id> to continue a previous agent — look for agent IDs in prior subagent results.",
+      "Use fork:true for research tasks - the subagent inherits your context.",
+      "Use background:true for long tasks - results arrive via notification.",
+      "Use resume:<id> to continue a previous agent - look for agent IDs in prior subagent results.",
     ],
     parameters: SubagentParams,
 
@@ -531,7 +576,7 @@ export default function (pi: ExtensionAPI) {
         const ok = results.filter(r => r.exitCode === 0).length;
 
         // ===========================================================================
-        // Result size handling — automatic persistence (same philosophy as Claude Code)
+        // Result size handling - automatic persistence (same philosophy as Claude Code)
         //
         // Parallel agents produce multiple results that together can overwhelm the
         // parent agent's context window. We auto-detect oversized results and
@@ -542,7 +587,7 @@ export default function (pi: ExtensionAPI) {
         //   PER_AGENT_PREVIEW_BYTES =  2,000 chars (preview kept inline after persistence)
         //   PER_MESSAGE_BUDGET      = 200,000 chars (sum of ALL inline results in one turn)
         //
-        // The parent agent NEVER needs to choose output modes — the framework
+        // The parent agent NEVER needs to choose output modes - the framework
         // handles it transparently. If a result is truncated, the parent sees
         // a file path and uses Read to fetch what it needs.
         // ===========================================================================
@@ -591,7 +636,7 @@ export default function (pi: ExtensionAPI) {
           lines.push(`[${r.agent}] ${statusIcon}: ${display}${errorHint}`);
         }
 
-        // Phase 3: Per-message budget check — if total inline content exceeds
+        // Phase 3: Per-message budget check - if total inline content exceeds
         // budget, mark the entire batch as requiring file reads (but still show
         // what we have so the coordinator can make decisions).
         const overBudget = totalInlineSize > PER_MESSAGE_BUDGET;

@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import type { TeamFile, TeamMember, SpawnTeammateConfig } from "./types.js";
-import { getTeamsDir, getTasksDir, type AgentConfig } from "./types.js";
+import { getTeamsDir, getTasksDir, getInboxesDir, type AgentConfig } from "./types.js";
 import { writeToMailbox } from "./mailbox.js";
 import { workerPool } from "./worker-pool.js";
 import { runTeammateLoop } from "./teammate-loop.js";
@@ -28,6 +28,9 @@ import { runTeammateLoop } from "./teammate-loop.js";
 
 /** Currently active team for the leader (initialized to null to prevent TDZ) */
 let activeTeam: { name: string; filePath: string; leadAgentId: string } | null = null;
+
+/** Track abort controllers for each team's teammate loops */
+const teamAbortControllers = new Map<string, AbortController[]>();
 
 // ============================================================================
 // File I/O
@@ -90,8 +93,23 @@ export async function createTeam(cwd: string, name: string, description?: string
 }
 
 export async function deleteTeam(cwd: string, name: string): Promise<void> {
+  // 1. Terminate all teammate loops
+  const controllers = teamAbortControllers.get(name) ?? [];
+  for (const ac of controllers) { try { ac.abort(); } catch {} }
+  teamAbortControllers.delete(name);
+
+  // 2. Delete tasks directory
+  const tasksDir = getTasksDir(cwd, name);
+  try { if (fs.existsSync(tasksDir)) fs.rmSync(tasksDir, { recursive: true }); } catch {}
+
+  // 3. Delete inboxes
+  const inboxesDir = getInboxesDir(cwd, name);
+  try { if (fs.existsSync(inboxesDir)) fs.rmSync(inboxesDir, { recursive: true }); } catch {}
+
+  // 4. Delete team file
   const filePath = getTeamFilePath(cwd, name);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
   if (activeTeam?.name === name) activeTeam = null;
 }
 
@@ -136,17 +154,15 @@ export async function spawnTeammate(
     await writeTeamFile(cwd, teamName, team);
   }
 
-  // Send initial prompt via mailbox
-  await writeToMailbox(cwd, config.name, {
-    from: "team-lead",
-    text: fullPrompt,
-    timestamp: new Date().toISOString(),
-    summary: config.description ?? `Task for ${config.name}`,
-  }, teamName);
-
   // Start autonomous poll loop — teammate will read inbox and claim tasks
   // on its own, without coordinator pushing prompts.
   const loopSignal = new AbortController();
+  
+  // Register to team's abort controller list
+  const controllers = teamAbortControllers.get(teamName) ?? [];
+  controllers.push(loopSignal);
+  teamAbortControllers.set(teamName, controllers);
+  
   runTeammateLoop({
     cwd: config.cwd ?? cwd, agentName: config.name, teamName, workerId, signal: loopSignal.signal,
   }).catch(() => {}); // fire-and-forget, runs until shutdown
