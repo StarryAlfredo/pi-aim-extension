@@ -156,7 +156,7 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
           if (isResultPersisted(ctx.cwd, agentId)) {
             const fullOutput = readPersistedResult(ctx.cwd, agentId);
             if (fullOutput) {
-              const MAX_INLINE = 10_000;
+              const MAX_INLINE = 50_000;
               if (fullOutput.length > MAX_INLINE) {
                 lines.push(`📄 Output (${fullOutput.length.toLocaleString()} chars):`);
                 lines.push(fullOutput.slice(0, MAX_INLINE));
@@ -180,7 +180,7 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
               if (transcriptMsgs.length > 0) {
                 const output = getFinalOutput(transcriptMsgs);
                 if (output) {
-                  const MAX_INLINE = 10_000;
+                  const MAX_INLINE = 50_000;
                   if (output.length > MAX_INLINE) {
                     lines.push(`📄 Output (${output.length.toLocaleString()} chars):`);
                     lines.push(output.slice(0, MAX_INLINE));

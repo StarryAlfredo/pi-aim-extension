@@ -114,7 +114,7 @@ export async function pollInbox(
           // assignment is intentional (from team-lead or auto-distributor).
           if (notif.type === "task_assigned" && !isAgentBusyStatus(cwd, teamName, agentName)) {
             const result = await claimTask(cwd, teamName, notif.taskId, agentName);
-            if (result && "task" in result) {
+            if ("task" in result) {
               const prompt = `Complete task #${result.task.id}: ${result.task.subject}\n\n${result.task.description || ""}`;
               return { type: "task_claimed", taskId: result.task.id, subject: result.task.subject, prompt };
             }
@@ -126,7 +126,7 @@ export async function pollInbox(
               const toClaim = unblocked.find(t => !t.owner);
               if (toClaim) {
                 const result = await claimTask(cwd, teamName, toClaim.id, agentName);
-                if (result && "task" in result) {
+                if ("task" in result) {
                   const prompt = `Complete task #${result.task.id}: ${result.task.subject}\n\n${result.task.description || ""}`;
                   return { type: "task_claimed", taskId: result.task.id, subject: result.task.subject, prompt };
                 }
@@ -174,7 +174,7 @@ export async function pollInbox(
           // Already tried and failed — don't hammer the lock
         } else {
           const result = await claimTask(cwd, teamName, available.id, agentName);
-          if (result && "task" in result) {
+          if ("task" in result) {
             const { task: claimed } = result;
             const prompt = `Complete task #${claimed.id}: ${claimed.subject}\n\n${claimed.description || ""}`;
             return { type: "task_claimed", taskId: claimed.id, subject: claimed.subject, prompt };

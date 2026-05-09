@@ -933,7 +933,7 @@ async function propagateFailureToBlocked(
   // Also capture a fresh task snapshot inside the lock for Phase 3 notifications.
   // This ensures notifications use consistent data, not the potentially-stale
   // allTasks from Phase 1's lockless BFS scan.
-  let freshSnapshot: TaskItem[];
+  let freshSnapshot: TaskItem[] = [];
   const dir = getTasksDir(cwd, team);
   ensureDir(dir);
   const release = await lock(listLockPath(cwd, team));
@@ -956,14 +956,14 @@ async function propagateFailureToBlocked(
   // Phase 3: Send notifications (outside the lock) using the fresh snapshot
   for (const unblockedId of toNotifyUnblocked) {
     const candidate = _findCandidateAgentFn?.(cwd, team);
-    try { await notifyTaskUnblocked(cwd, team, unblockedId, freshSnapshot!, candidate); } catch (err) {
+    try { await notifyTaskUnblocked(cwd, team, unblockedId, freshSnapshot, candidate); } catch (err) {
       console.warn(`[aim] Failed to notify unblocked task #${unblockedId}:`, err);
     }
   }
 
   // Notify owners of cascade-failed tasks
   // Use the fresh snapshot to get accurate owner info
-  const freshTaskMap = new Map((freshSnapshot!).map(t => [t.id, t]));
+  const freshTaskMap = new Map(freshSnapshot.map(t => [t.id, t]));
   for (const item of toFail) {
     const task = freshTaskMap.get(item.id);
     if (task?.owner) {
