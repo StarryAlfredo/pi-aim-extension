@@ -110,7 +110,13 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
 
             // Poll task status
             const current = getTask(ctx.cwd, team, taskId);
-            if (!current || isTerminalStatus(current.status)) {
+            if (!current) {
+              // Task was deleted while waiting — treat as terminal
+              clearInterval(interval);
+              resolve();
+              return;
+            }
+            if (isTerminalStatus(current.status)) {
               clearInterval(interval);
               resolve();
             }

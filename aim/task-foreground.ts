@@ -45,6 +45,8 @@ export interface TaskDisplayState {
   _autoBgTimer?: ReturnType<typeof setTimeout>;
   /** The evict timer handle */
   _evictTimer?: ReturnType<typeof setTimeout>;
+  /** Whether the task ended in a failed/killed state (for extended evict delay) */
+  _isFailed?: boolean;
 }
 
 /** Result of a foreground/background transition */
@@ -292,11 +294,12 @@ export function backgroundAll(): number {
  * If retain=true, starts the evict timer.
  * If retain=false, the display state is removed after a brief delay.
  */
-export function markCompleted(id: string): void {
+export function markCompleted(id: string, options?: { failed?: boolean }): void {
   const state = displayStates.get(id);
   if (!state) return;
 
   state.completedAt = Date.now();
+  state._isFailed = options?.failed ?? false;
 
   // Clear auto-background timer (no longer needed)
   if (state._autoBgTimer !== undefined) {
@@ -305,16 +308,22 @@ export function markCompleted(id: string): void {
   }
 
   if (state.retain && state.evictAfterMs !== undefined) {
-    // Start evict timer
+    // Start evict timer. Failed/killed tasks get 2x the evict time
+    // to allow debugging — they're more likely to need review than
+    // successful completions.
+    const effectiveEvictMs = state._isFailed
+      ? state.evictAfterMs * 2
+      : state.evictAfterMs;
     state._evictTimer = setTimeout(() => {
       evictTask(id);
-    }, state.evictAfterMs);
+    }, effectiveEvictMs);
   } else if (!state.retain) {
-    // No retain — remove display state after a brief delay
-    // (gives the renderer one cycle to show the completion)
+    // No retain — remove display state after a brief delay.
+    // Failed tasks get a longer delay (10s vs 2s) for review.
+    const removeDelay = state._isFailed ? 10_000 : 2_000;
     setTimeout(() => {
       removeDisplayState(id);
-    }, 2000);
+    }, removeDelay);
   }
 }
 

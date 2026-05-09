@@ -101,24 +101,37 @@ export function getTeamAgentStatuses(cwd: string, team: string): AgentStatus[] {
 
   // Also include team members from the team file — newly spawned teammates
   // that haven't claimed any tasks yet won't appear in task ownership data.
-  // Use getTeamsDir consistently with teams.ts (no separate safeName logic).
+  // Read the team file directly by name to avoid scanning all teams and
+  // to stay consistent with teams.ts's file naming convention.
   const teamsDir = getTeamsDir(cwd);
   try {
-    if (fs.existsSync(teamsDir)) {
-      for (const f of fs.readdirSync(teamsDir)) {
-        if (!f.endsWith(".json")) continue;
-        try {
-          const raw = fs.readFileSync(path.join(teamsDir, f), "utf-8");
-          const teamFile = JSON.parse(raw) as import("./types.js").TeamFile;
-          // Only include members from the matching team
-          if (teamFile.name === team || path.basename(f, ".json") === team) {
-            for (const member of teamFile.members) {
-              ownerNames.add(member.name);
-            }
+    // Try direct file access first (matches teams.ts's readTeamFile pattern)
+    const directPath = path.join(teamsDir, `${team}.json`);
+    let teamFile: import("./types.js").TeamFile | null = null;
+    try {
+      const raw = fs.readFileSync(directPath, "utf-8");
+      teamFile = JSON.parse(raw) as import("./types.js").TeamFile;
+    } catch {
+      // Direct access failed — fall back to scanning (handles safeName encoding)
+      try {
+        if (fs.existsSync(teamsDir)) {
+          for (const f of fs.readdirSync(teamsDir)) {
+            if (!f.endsWith(".json")) continue;
+            try {
+              const raw = fs.readFileSync(path.join(teamsDir, f), "utf-8");
+              const tf = JSON.parse(raw) as import("./types.js").TeamFile;
+              if (tf.name === team) {
+                teamFile = tf;
+                break;
+              }
+            } catch {}
           }
-        } catch {
-          // Invalid team file — skip
         }
+      } catch {}
+    }
+    if (teamFile) {
+      for (const member of teamFile.members) {
+        ownerNames.add(member.name);
       }
     }
   } catch {

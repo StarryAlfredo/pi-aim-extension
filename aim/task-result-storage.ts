@@ -201,12 +201,25 @@ export function handleBatchOverflow(
   let overBudget = totalInlineSize > messageBudget;
 
   if (overBudget) {
-    // Budget exceeded: truncate all items to preview-only mode
+    // Budget exceeded: truncate largest items first, preserve small results.
+    // Sort by display size descending — truncate the biggest ones first
+    // to minimize information loss.
     const previewBytes = options?.previewBytes ?? PER_AGENT_PREVIEW_BYTES;
+    const SMALL_RESULT_THRESHOLD = previewBytes * 2; // Results under this are kept intact
 
-    for (let i = 0; i < items.length; i++) {
+    // Sort indices by display size descending (biggest first for truncation)
+    const sortedIndices = overflowItems
+      .map((item, i) => ({ item, i }))
+      .sort((a, b) => b.item.display.length - a.item.display.length);
+
+    for (const { i } of sortedIndices) {
+      if (totalInlineSize <= messageBudget) break; // Budget satisfied
+
       const item = items[i]!;
       const overflow = overflowItems[i]!;
+
+      // Skip small results — they're not contributing much to budget overflow
+      if (overflow.display.length <= SMALL_RESULT_THRESHOLD && !overflow.persisted) continue;
 
       // If not already persisted, persist now
       if (!overflow.persisted && item.fullOutput.length > 0) {

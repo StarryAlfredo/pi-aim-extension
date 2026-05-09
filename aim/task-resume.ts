@@ -110,8 +110,20 @@ export async function resumeTask(
   const model = options?.model ?? meta?.model;
   const tools = meta?.tools;
 
-  // Create worktree for isolation
-  const wt = createWorktree(cwd, agentId);
+  // Create worktree for isolation (or reuse existing if crash didn't clean up)
+  // Check if a worktree for this agent already exists from a previous crashed session.
+  // If so, reuse it instead of creating a duplicate.
+  let wt = null;
+  try {
+    const possibleExisting = path.join(cwd, ".pi", "aim", "worktrees", `aim-${agentId}`);
+    if (fs.existsSync(possibleExisting) && fs.statSync(possibleExisting).isDirectory()) {
+      // Reuse existing worktree — just set the paths
+      wt = { baseDir: possibleExisting, effectiveCwd: possibleExisting };
+    }
+  } catch {}
+  if (!wt) {
+    wt = createWorktree(cwd, agentId);
+  }
   const wtBaseDir: string | null = wt?.baseDir ?? null;
   const effectiveCwd = wt?.effectiveCwd ?? cwd;
 

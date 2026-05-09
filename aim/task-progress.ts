@@ -89,6 +89,10 @@ const activeProgress = new Map<string, TaskProgress>();
  * Returns the initialized progress object.
  */
 export function createProgressTracker(id: string): TaskProgress {
+  // Warn if overwriting an existing tracker (e.g. resume scenario)
+  if (activeProgress.has(id)) {
+    console.warn(`[aim] Overwriting existing progress tracker for ${id}`);
+  }
   const now = Date.now();
   const progress: TaskProgress = {
     id,

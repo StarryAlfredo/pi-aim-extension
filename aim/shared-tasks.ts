@@ -327,15 +327,27 @@ export async function createTask(
       updatedAt: Date.now(),
     };
 
-    writeTaskFile(cwd, team, task);
-
-    // Validate blockedBy references and maintain reverse blocks[] in one pass
+    // Validate blockedBy references BEFORE writing to disk.
+    // This prevents orphan task files if a blocker ID is invalid.
     if (task.blockedBy.length > 0) {
       for (const blockerId of task.blockedBy) {
         const blocker = readTaskFile(cwd, team, blockerId);
         if (!blocker) {
           throw new Error(`Cannot create task: blocker #${blockerId} does not exist`);
         }
+      }
+    }
+
+    writeTaskFile(cwd, team, task);
+
+    // Maintain reverse blocks[] references on blockers.
+    // Validation was done above, so all blockers exist at this point.
+    if (task.blockedBy.length > 0) {
+      for (const blockerId of task.blockedBy) {
+        const blocker = readTaskFile(cwd, team, blockerId);
+        // Blocker was validated above — if missing here, it was deleted
+        // between validation and write. Skip reverse ref silently.
+        if (!blocker) continue;
         // Only maintain reverse reference on non-terminal blockers.
         // Terminal blockers have already satisfied the dependency.
         if (!isTerminalStatus(blocker.status) && !blocker.blocks.includes(nextId)) {
@@ -733,8 +745,17 @@ export async function deleteTask(
     // Terminal state protection: reject deletion of non-terminal tasks unless force
     const task = readTaskFile(cwd, team, taskId);
     if (!task) return false;
-    if (!options?.force && !isTerminalStatus(task.status)) {
-      throw new Error(`Cannot delete task #${taskId}: status is "${task.status}" (use force to override)`);
+    if (!isTerminalStatus(task.status)) {
+      if (!options?.force) {
+        throw new Error(`Cannot delete task #${taskId}: status is "${task.status}" (use force to override)`);
+      }
+      // Force-deleting a non-terminal task: mark as killed first so that
+      // notifications and failure propagation run. We write directly to disk
+      // (bypassing updateTask to avoid re-acquiring the same lock) and let
+      // the caller handle worker termination if needed.
+      task.status = "killed";
+      task.metadata = { ...task.metadata, killReason: "force_deleted" };
+      task.updatedAt = Date.now();
     }
     // Clean up references in other tasks.
     // Note: we intentionally modify terminal-state tasks here — this is
@@ -975,10 +996,15 @@ async function propagateFailureToBlocked(
       if (!fresh) continue;
       // Skip terminal tasks (already completed/failed/killed)
       if (isTerminalStatus(fresh.status)) continue;
-      // Cascade-fail both pending and in_progress tasks.
-      // in_progress tasks were claimed after our BFS scan but before
-      // we acquired the lock — they should still be failed because
-      // their dependency will never be satisfied.
+      // Skip in_progress tasks — they have an active agent working on them.
+      // Cascading failure to an active agent is jarring (they get task_claimed
+      // then immediately task_failed). Let the stale task cleanup handle these
+      // instead, since the agent will discover the failed dependency on its own.
+      if (fresh.status === "in_progress") {
+        console.info(`[aim] Skipping cascade for in-progress task #${item.id} (dependency #${failedTaskId} failed). Stale cleanup will handle it.`);
+        continue;
+      }
+      // Only cascade-fail pending tasks — they haven't been claimed yet.
       fresh.status = "failed";
       fresh.metadata = { ...fresh.metadata, failureReason: item.reason };
       fresh.updatedAt = Date.now();
