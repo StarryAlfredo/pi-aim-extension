@@ -20,6 +20,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getTasksDir } from "./types.js";
+import type { Message } from "@mariozechner/pi-ai";
 
 // ============================================================================
 // Types
@@ -374,6 +375,34 @@ export function deletePersistedProgress(cwd: string, id: string, team?: string):
   } catch {
     // File may not exist — ignore
   }
+}
+
+// ============================================================================
+// Usage Collection
+// ============================================================================
+
+/**
+ * Collect usage statistics from a list of messages.
+ * Shared utility to avoid duplication between index.ts and task-resume.ts.
+ */
+export function collectUsageFromMessages(messages: Message[]): {
+  input: number; output: number; cacheRead: number; cacheWrite: number;
+  cost: number; contextTokens: number; turns: number;
+} {
+  let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, turns = 0;
+  for (const msg of messages) {
+    if (msg.role === "assistant") {
+      turns++;
+      const usage = (msg as Record<string, unknown>).usage as Record<string, number> | undefined;
+      if (usage) {
+        input += usage.input || 0;
+        output += usage.output || 0;
+        cacheRead += usage.cacheRead || 0;
+        cacheWrite += usage.cacheWrite || 0;
+      }
+    }
+  }
+  return { input, output, cacheRead, cacheWrite, cost: 0, contextTokens: 0, turns };
 }
 
 // ============================================================================

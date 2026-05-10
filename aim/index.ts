@@ -45,10 +45,14 @@ import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { discoverAgents } from "./agents.js";
 import type { AgentConfig, AgentScope } from "./types.js";
 import { registerSendMessage } from "./send-message.js";
+// P7: Shared usage collection
+import { collectUsageFromMessages } from "./task-progress.js";
 import { registerCoordinator } from "./coordinator.js";
 import { createWorktree, removeWorktreeByBase } from "./worktree.js";
 import { registerTeams, getActiveTeam } from "./teams.js";
 import { registerPermissions } from "./permissions.js";
+// P8: Static import for role resolution
+import { getRoleTools, resolveRole } from "./permission-matrix.js";
 import { registerSwarm } from "./swarm.js";
 // P5: Task tools
 import { registerTaskCreateTool } from "./task-create-tool.js";
@@ -233,25 +237,8 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 }
 
 // ============================================================================
-// Usage Collection
+// Usage Collection (shared from task-progress.ts)
 // ============================================================================
-
-function collectUsage(messages: Message[]): SingleResult["usage"] {
-  let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, turns = 0;
-  for (const msg of messages) {
-    if (msg.role === "assistant") {
-      turns++;
-      const usage = (msg as Record<string, unknown>).usage as Record<string, number> | undefined;
-      if (usage) {
-        input += usage.input || 0;
-        output += usage.output || 0;
-        cacheRead += usage.cacheRead || 0;
-        cacheWrite += usage.cacheWrite || 0;
-      }
-    }
-  }
-  return { input, output, cacheRead, cacheWrite, cost: 0, contextTokens: 0, turns };
-}
 
 // ============================================================================
 // Subagent result type
@@ -307,7 +294,7 @@ async function runSingleAgent(
       cwd: params.cwd ?? cwd,
       background: params.background ?? meta.background,
       forkFrom: undefined, // resume loads transcript from sidechain file via readTranscript
-      systemPrompt: params.systemPrompt,
+      systemPrompt: params.systemPrompt ?? meta.systemPrompt,  // Fall back to original agent's system prompt
       rpcMode: true,
       agentId: params.resumeAgentId,
     });
@@ -332,7 +319,7 @@ async function runSingleAgent(
 
     try {
       const result = await workerPool.waitFor(workerId);
-      const usage = collectUsage(result.messages);
+      const usage = collectUsageFromMessages(result.messages);
       const finalOutput = getFinalOutput(result.messages);
       const lastAssistant = result.messages.filter(m => m.role === "assistant").pop() as Record<string, unknown> | undefined;
       const stopReason = lastAssistant?.stopReason as string | undefined;
@@ -373,6 +360,15 @@ async function runSingleAgent(
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
         agentId: params.resumeAgentId, resumed: true,
       };
+    } finally {
+      // Always clean up display state and progress on resume
+      if (params.resumeAgentId) {
+        markCompleted(params.resumeAgentId);
+        setTimeout(() => {
+          removeProgressTracker(params.resumeAgentId);
+          removeDisplayState(params.resumeAgentId);
+        }, 5000);
+      }
     }
   }
 
@@ -380,14 +376,14 @@ async function runSingleAgent(
   if (!agentDef) {
     const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
     return {
-      agent: params.agent, agentSource: "unknown", task: params.task, exitCode: 1,
+      agent: params.agent ?? "", agentSource: "unknown", task: params.task ?? "", exitCode: 1,
       messages: [], stderr: `Unknown agent: "${params.agent}". Available: ${available}.`,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
     };
   }
 
   // Decide mode: fork or background → RPC; simple sync → print
-  const useRpc = params.fork || params.background;
+  const useRpc = (params.fork ?? false) || (params.background ?? false);
 
   // Generate agentId for ALL non-resume agents (not just RPC ones).
   // This enables worktree isolation and transcript storage.
@@ -396,9 +392,10 @@ async function runSingleAgent(
 
   // Persist metadata (enable resume, auditing)
   writeAgentMetadata(cwd, agentId, {
-    agentType: agentDef.name, name: params.agent, task: params.task,
+    agentType: agentDef.name, name: params.agent ?? "", task: params.task ?? "",
     model: params.model ?? agentDef.model,
     tools: params.tools ?? agentDef.tools,
+    systemPrompt: agentDef.systemPrompt,  // Save for resume
     forkMode: params.fork ?? false,
     background: params.background ?? false,
     createdAt: Date.now(),
@@ -421,9 +418,11 @@ async function runSingleAgent(
   // Workers cannot re-delegate via subagent/send_message; teammates get
   // collaboration tools force-injected; coordinators get exclusive set.
   // This runs regardless of what the agent definition declares.
-  const { getRoleTools, resolveRole } = await import("./permission-matrix.js");
-  const isTeammate = (params as Record<string, unknown>).team_name !== undefined;
-  const role = resolveRole({ isTeammate, isFork: params.fork });
+  const isTeammate = Boolean((params as Record<string, unknown>).team_name);
+  // Check coordinator mode: if the coordinator system prompt injection is active,
+  // this subagent is being spawned by a coordinator and should get the exclusive tool set.
+  const isCoordinator = (params.agent ?? "") === "coordinator" || (params.systemPrompt?.toLowerCase() ?? "").includes("coordinator mode");
+  const role = resolveRole({ isTeammate, isFork: params.fork ?? false, isCoordinator });
   const tools = getRoleTools(role, declaredTools);
 
   // Build system prompt for fork mode: append agent's system prompt
@@ -439,10 +438,58 @@ async function runSingleAgent(
   }
 
   // =======================================================================
-  // Worktree isolation: create a git worktree copy of the project and
-  // run the agent inside it. This prevents file conflicts between
-  // concurrent agents and protects the main working directory.
+  // Worktree isolation: create AFTER background check to prevent leaks
+  // Background agents don't need worktree cleanup (they run indefinitely)
   // =======================================================================
+  if (params.background) {
+    // Background agents still need an effectiveCwd
+    const workerId = workerPool.spawn({
+      name: params.agent, prompt: params.task,
+      model, tools,
+      cwd: params.cwd ?? cwd,
+      background: true,
+      systemPrompt,
+      rpcMode: useRpc,
+      agentId,
+    });
+
+    const info = workerPool.getInfo(workerId);
+    if (!info) throw new Error("Worker spawn failed");
+
+    // P6: associate with task if needed
+    if ((params as Record<string, unknown>).task_id) {
+      const tid = (params as Record<string, unknown>).task_id as string;
+      const activeTeam = getActiveTeam();
+      if (activeTeam) {
+        try {
+          await updateTask(cwd, activeTeam.name, tid, {
+            status: "in_progress",
+            metadata: { agentId },
+          });
+        } catch (err) {
+          console.warn(`[aim] Failed to associate agent ${agentId} with task #${tid}:`, err);
+        }
+      }
+    }
+
+    const displayState = createDisplayState(agentId, {
+      isForeground: false,
+      autoBackgroundAfterMs: 0,
+      retain: false,
+    });
+
+    recordStatusChange(agentId, "background_launched");
+    onUpdate?.({ agent: params.agent, status: "running (background)", output: "" });
+
+    return {
+      agent: params.agent, agentSource: agentDef.source, task: params.task,
+      exitCode: -1, messages: [], stderr: "",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+      agentId, resumed: false,
+    };
+  }
+
+  // Foreground path: create worktree (will be cleaned up in finally)
   const wt = createWorktree(cwd, agentId);
   const wtBaseDir: string | null = wt?.baseDir ?? null;
   const effectiveCwd = wt?.effectiveCwd ?? (params.cwd ?? cwd);
@@ -451,7 +498,7 @@ async function runSingleAgent(
     name: params.agent, prompt: params.task,
     model, tools,
     cwd: effectiveCwd,
-    background: params.background ?? false,
+    background: false,
     systemPrompt,
     rpcMode: useRpc,
     agentId,
@@ -479,31 +526,19 @@ async function runSingleAgent(
     }
   }
 
-  // P4: Create display state for this task
+  // P4: Create display state for this foreground task
   const displayState = createDisplayState(agentId, {
-    isForeground: !params.background,
-    autoBackgroundAfterMs: params.background ? 0 : 60_000, // 60s auto-bg for foreground tasks
+    isForeground: true,
+    autoBackgroundAfterMs: 60_000,
     retain: false,
   });
-
-  if (params.background) {
-    // P3: Persist progress for background tasks so they can be inspected later
-    recordStatusChange(agentId, "background_launched");
-
-    return {
-      agent: params.agent, agentSource: agentDef.source, task: params.task,
-      exitCode: -1, messages: [], stderr: "",
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-      agentId, resumed: false,
-    };
-  }
 
   try {
     // RPC mode: waitFor resolves on agent_end (handled in attachStdout)
     // Process stays alive in idle state for multi-turn.
     // Print mode: waitFor resolves on process close after exit.
     const result = await workerPool.waitFor(workerId);
-    const usage = collectUsage(result.messages);
+    const usage = collectUsageFromMessages(result.messages);
     const finalOutput = getFinalOutput(result.messages);
     const lastAssistant = result.messages.filter(m => m.role === "assistant").pop() as Record<string, unknown> | undefined;
     const stopReason = lastAssistant?.stopReason as string | undefined;
@@ -539,17 +574,6 @@ async function runSingleAgent(
 
     // P3: Persist progress to disk before cleanup
     persistProgress(cwd, agentId);
-
-    // P4: Mark task as completed in display state
-    markCompleted(agentId);
-
-    // P3: Clean up progress tracker (data already persisted)
-    // Delay removal to allow renderers to read final state
-    setTimeout(() => {
-      removeProgressTracker(agentId);
-      removeDisplayState(agentId);
-      deletePersistedProgress(cwd, agentId);
-    }, 5000);
 
     onUpdate?.({ agent: params.agent, status: result.exitCode === 0 ? "completed" : "error", output: finalOutput });
 

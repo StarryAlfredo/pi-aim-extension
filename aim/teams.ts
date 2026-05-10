@@ -130,6 +130,9 @@ export async function spawnTeammate(
 
   const tools = agentDef?.tools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
+  // Generate a unique agentId for this teammate (required for progress tracking)
+  const agentId = `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
   const workerId = workerPool.spawn({
     name: config.name,
     prompt: fullPrompt,
@@ -137,6 +140,7 @@ export async function spawnTeammate(
     tools,
     cwd: config.cwd ?? cwd,
     background: true,
+    agentId,
   });
 
   // P2: Pass team_name to the worker config so the child process
@@ -173,9 +177,10 @@ export async function spawnTeammate(
   
   runTeammateLoop({
     cwd: config.cwd ?? cwd, agentName: config.name, teamName, workerId, signal: loopSignal.signal,
+    agentId,  // Pass agentId for progress tracking
   }).catch(() => {}); // fire-and-forget, runs until shutdown
 
-  return { agentId: workerId, name: config.name, team: teamName };
+  return { agentId, name: config.name, team: teamName };
 }
 
 // ============================================================================

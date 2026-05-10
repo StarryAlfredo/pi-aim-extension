@@ -30,6 +30,8 @@ export interface TeammateLoopConfig {
   signal: AbortSignal;
   /** Optional task ID to auto-complete when the worker finishes work */
   taskId?: string;
+  /** Agent ID (UUID) for progress tracking — required since progress trackers are keyed by agentId, not agentName */
+  agentId?: string;
   /** Called when the teammate starts processing a new item */
   onActivity?: (item: PollResult) => void;
   /** Called when the teammate enters idle state */
@@ -191,12 +193,12 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
         await sendIdleNotification(cwd, agentName, teamName, {
           idleReason: justCompletedWork ? "completed" : "available",
           // P3: Include progress summary in idle notification
-          summary: getProgressTracker(agentName)
-            ? generateCompactSummary(agentName)
+          summary: getProgressTracker(config.agentId ?? agentName)
+            ? generateCompactSummary(config.agentId ?? agentName)
             : undefined,
         });
         // P3: Persist progress on each idle cycle (periodic checkpoint)
-        persistProgress(cwd, agentName);
+        persistProgress(cwd, config.agentId ?? agentName);
         await new Promise(r => setTimeout(r, POLL_GAP_MS));
         break;
       }

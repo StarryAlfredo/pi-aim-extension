@@ -16,8 +16,7 @@
  *   - Idle notification to leader
  */
 
-import { readUnreadMessages, markMessageAsRead, parseStructuredMessage } from "./mailbox.js";
-import { writeToMailbox, createIdleNotification } from "./mailbox.js";
+import { readUnreadMessages, markMessageAsRead, parseStructuredMessage, writeToMailbox, createIdleNotification } from "./mailbox.js";
 import { findAvailableTask, claimTask, findUnblockedTasks, listTasks, isTerminalStatus, getTask } from "./shared-tasks.js";
 import { findLeastBusyAgent, isAgentBusyStatus, type AgentStatus } from "./agent-status.js";
 import { notifyTaskAssignment, notifyTaskUnblocked, nudgeVerification, type TaskNotification } from "./task-notifications.js";

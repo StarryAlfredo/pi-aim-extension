@@ -23,7 +23,7 @@ import { Type } from "typebox";
 import { getTask, updateTask, forceTaskStatus, listTasks, isTerminalStatus } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { readAgentMetadata, readTranscript } from "./aim-transcript.js";
-import { getProgressTracker, createProgressTracker, loadProgress, persistProgress, generateCompactSummary, removeProgressTracker } from "./task-progress.js";
+import { getProgressTracker, createProgressTracker, loadProgress, persistProgress, generateCompactSummary, removeProgressTracker, collectUsageFromMessages } from "./task-progress.js";
 import { createDisplayState, markCompleted, removeDisplayState } from "./task-foreground.js";
 import { workerPool } from "./worker-pool.js";
 import { createWorktree, removeWorktreeByBase } from "./worktree.js";
@@ -392,25 +392,5 @@ export async function recoverOrphanTasks(
 }
 
 // ============================================================================
-// Helper
+// Helper (usage collection now imported from task-progress.ts)
 // ============================================================================
-
-function collectUsageFromMessages(messages: Message[]): {
-  input: number; output: number; cacheRead: number; cacheWrite: number;
-  cost: number; contextTokens: number; turns: number;
-} {
-  let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, turns = 0;
-  for (const msg of messages) {
-    if (msg.role === "assistant") {
-      turns++;
-      const usage = (msg as Record<string, unknown>).usage as Record<string, number> | undefined;
-      if (usage) {
-        input += usage.input || 0;
-        output += usage.output || 0;
-        cacheRead += usage.cacheRead || 0;
-        cacheWrite += usage.cacheWrite || 0;
-      }
-    }
-  }
-  return { input, output, cacheRead, cacheWrite, cost: 0, contextTokens: 0, turns };
-}

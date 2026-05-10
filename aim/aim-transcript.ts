@@ -31,6 +31,7 @@ export interface AgentMetadata {
   task: string;
   model?: string;
   tools?: string[];
+  systemPrompt?: string;
   forkMode: boolean;
   background: boolean;
   createdAt: number;
