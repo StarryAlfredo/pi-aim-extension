@@ -42,12 +42,38 @@ function fileExists(p: string): boolean {
 
 /** Get the pi executable path */
 function getPiCommand(): { command: string; args: string[] } {
-  // Try which/where first for cross-platform reliability
+  // On Windows, prefer resolving the JS entry point directly.
+  // `where pi` returns .cmd wrappers and POSIX scripts that require
+  // shell:true to execute, which can interfere with stdio piping.
+  // Using node + cli.js avoids shell mode entirely.
+  if (process.platform === "win32" && process.execPath) {
+    const nodeDir = path.dirname(process.execPath);
+    const cliCandidates = [
+      path.join(nodeDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      path.join(nodeDir, "node_modules", "@mariozechner", "pi-coding-agent", "dist", "cli.js"),
+    ];
+    for (const cliJs of cliCandidates) {
+      if (fileExists(cliJs)) {
+        return { command: process.execPath, args: [cliJs] };
+      }
+    }
+  }
+
+  // Try which/where for cross-platform reliability (non-Windows primary path)
   try {
     const { execSync } = require("node:child_process");
     const whichCmd = process.platform === "win32" ? "where pi" : "which pi";
     const result = execSync(whichCmd, { encoding: "utf-8", timeout: 3000 }).trim();
     if (result) {
+      if (process.platform === "win32") {
+        // On Windows, prefer .cmd files over POSIX shell scripts.
+        // These require shell:true in spawn() to execute properly.
+        const lines = result.split("\n").map((l: string) => l.trim()).filter(Boolean);
+        const cmdFile = lines.find((l: string) => l.endsWith(".cmd"));
+        if (cmdFile) {
+          return { command: cmdFile, args: [] };
+        }
+      }
       const firstLine = result.split("\n")[0]!.trim();
       return { command: firstLine, args: [] };
     }
@@ -60,14 +86,10 @@ function getPiCommand(): { command: string; args: string[] } {
     return { command: process.execPath, args: [execPath] };
   }
 
-  // On Windows, Node.js spawn() cannot directly execute .cmd files (EINVAL).
-  // Instead, resolve pi.cmd to find the actual JS entry point and use node.
+  // On Windows: fallback if cli.js resolution above failed.
+  // Try additional locations for the JS entry point.
   if (process.platform === "win32" && process.execPath) {
     const nodeDir = path.dirname(process.execPath);
-    const cliJs = path.join(nodeDir, "node_modules", "@mariozechner", "pi-coding-agent", "dist", "cli.js");
-    if (fileExists(cliJs)) {
-      return { command: process.execPath, args: [cliJs] };
-    }
     // Fallback: try the .bin symlink path
     const binCliJs = path.join(nodeDir, "node_modules", ".bin", "pi");
     if (fileExists(binCliJs)) {
@@ -149,6 +171,13 @@ export class WorkerPool {
       cwd: config.cwd ?? process.cwd(),
       stdio: isRpc ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...envExtra },
+      // On Windows, spawn() cannot directly execute .cmd files (EINVAL) or
+      // POSIX shell scripts (ENOENT). Using shell:true allows cmd.exe to
+      // properly resolve and execute .cmd wrappers.
+      // However, when using node.exe + cli.js directly (the preferred path
+      // on Windows), shell:true is NOT needed and would interfere with
+      // stdio piping.
+      shell: process.platform === "win32" && piCmd.command.endsWith(".cmd"),
     });
 
     const info: WorkerInfo = {
