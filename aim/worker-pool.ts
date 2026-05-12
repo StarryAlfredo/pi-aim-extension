@@ -25,16 +25,11 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "@mariozechner/pi-ai";
 import type { WorkerConfig, WorkerInfo, WorkerState } from "./types.js";
 import {
-  createProgressTracker,
   recordToolUse,
   recordTokenUsage,
   recordTurn,
   recordStatusChange,
   recordError,
-  removeProgressTracker,
-  persistProgress,
-  deletePersistedProgress,
-  type TaskProgress,
 } from "./task-progress.js";
 
 // ============================================================================
@@ -171,11 +166,9 @@ export class WorkerPool {
       turnCount: 0,
     };
 
-    // P3: Create progress tracker for this worker if agentId is set
-    if (config.agentId) {
-      createProgressTracker(config.agentId);
-      recordStatusChange(config.agentId, "worker_spawned");
-    }
+    // Progress tracking is created by agent-executor.ts before calling spawn(),
+    // so events from attachStdout are never lost. WorkerPool only records events
+    // into the tracker — it does not own the lifecycle.
 
     // donePromise: resolves on agent_end (RPC) or close (print)
     // Reset for each turn in RPC mode via resetDonePromise()

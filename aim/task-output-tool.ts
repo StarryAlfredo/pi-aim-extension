@@ -18,7 +18,7 @@ import { getTask, isTerminalStatus } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { getProgressTracker, generateProgressSummary, generateCompactSummary } from "./task-progress.js";
 import { readAgentMetadata, readTranscript } from "./aim-transcript.js";
-import { getFinalOutput } from "./render.js";
+import { getFinalOutput } from "./agent-result.js";
 // P7: Result storage
 import { readPersistedResult, isResultPersisted, getPersistedResultPath, PER_AGENT_INLINE_LIMIT } from "./task-result-storage.js";
 import type { TaskItem } from "./types.js";

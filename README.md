@@ -1,33 +1,19 @@
 # Pi AI Multi-Agent Extension (AIM)
 
-Agent orchestration, LLM interaction tools, and background services for [pi coding agent](https://github.com/badlogic/pi-mono).
+Agent orchestration for [pi coding agent](https://github.com/badlogic/pi-mono).
 
 ## Overview
 
-AIM extends pi with three layers of capability:
+AIM extends pi with multi-agent orchestration — the ability to spawn, coordinate,
+and communicate with child agents. A single cohesive extension with modules
+organized by concern.
 
-| Module | Purpose | Dependency |
-|--------|---------|------------|
-| **aim** | Multi-agent orchestration — spawn, coordinate, and communicate with child agents | None |
-| **aim-tools** | LLM ↔ user interaction tools — todo, ask, brief, plan approval | None |
-| **aim-services** | Background auto-services — memory extraction, compaction, cron scheduling, task output | aim |
-
-```
-                        ┌──────────────┐
-                        │   aim-tools   │  LLM ↔ user interaction
-                        │  (no deps)    │  (always useful, even alone)
-                        └──────────────┘
-                               │
-                        ┌──────┴──────┐
-                        │     aim      │  Multi-agent orchestration
-                        │  (no deps)   │  spawn / fork / coordinate / teams
-                        └──────┬──────┘
-                               │
-                        ┌──────┴──────┐
-                        │ aim-services │  Background auto-services
-                        │ (dep: aim)   │  memory / compact / cron / task output
-                        └─────────────┘
-```
+| Concern | Modules | Purpose |
+|---------|---------|---------|
+| **Core orchestration** | `agent-executor`, `worker-pool`, `subagent-tool`, `coordinator`, `teams`, `swarm` | Spawn, execute, and manage subagents |
+| **Task system** | `shared-tasks`, `task-create-tool`, `task-update-tool`, `task-list-tool`, `task-output-tool`, `task-resume-tool`, `task-render`, `task-progress`, `task-foreground`, `task-notifications`, `task-result-storage`, `task-hooks`, `task-distributor` | File-based shared task list with lifecycle, dependencies, and rendering |
+| **Communication** | `mailbox`, `poller`, `lead-poller`, `send-message`, `permission-sync` | Inter-agent messaging and permission flow |
+| **Infrastructure** | `types`, `render`, `worktree`, `extension-lifecycle`, `lock`, `agent-result`, `agent-lifecycle`, `permissions`, `permission-matrix`, `agents`, `aim-transcript` | Cross-cutting concerns: types, rendering, file locking, lifecycle management |
 
 ## Installation
 
@@ -43,25 +29,8 @@ pi install git:github.com/StarryAlfredo/pi-aim-extension
 # Clone
 git clone https://github.com/StarryAlfredo/pi-aim-extension.git
 
-# Symlink each module
+# Symlink
 mklink /J "%USERPROFILE%\.pi\agent\extensions\aim" "path\to\pi-aim-extension\aim"
-mklink /J "%USERPROFILE%\.pi\agent\extensions\aim-tools" "path\to\pi-aim-extension\aim-tools"
-mklink /J "%USERPROFILE%\.pi\agent\extensions\aim-services" "path\to\pi-aim-extension\aim-services"
-```
-
-### Selective install
-
-You don't need all three. Pick what you want:
-
-```bash
-# Just multi-agent (no UI tools or services)
-pi -e ./aim/index.ts
-
-# Multi-agent + user interaction tools
-pi -e ./aim/index.ts -e ./aim-tools/index.ts
-
-# Everything
-pi -e ./aim/index.ts -e ./aim-tools/index.ts -e ./aim-services/index.ts
 ```
 
 ## Architecture
@@ -69,22 +38,60 @@ pi -e ./aim/index.ts -e ./aim-tools/index.ts -e ./aim-services/index.ts
 ```
 Pi Extension System
 │
-├── aim/              Extension 1: Multi-agent orchestration
-│   ├── Registered Tools:    subagent, send_message
-│   ├── Registered Commands: /coordinator
-│   ├── Event Handlers:      before_agent_start, agent_end, tool_call
-│   └── Export API:          WorkerPool, mailbox, team API
-│
-├── aim-tools/        Extension 2: LLM ↔ user interaction
-│   ├── Registered Tools:    todo_write, ask_user_question, brief
-│   ├── Registered Tools:    enter_plan_mode, exit_plan_mode
-│   └── Event Handlers:      (none)
-│
-└── aim-services/     Extension 3: Background auto-services
-    ├── Registered Tools:    task_output, cron_create, cron_delete, cron_list
-    ├── Event Handlers:      agent_end, tool_result, session_compact
-    └── Export API:          (none)
+└── aim/              Single extension: Multi-agent orchestration
+    │
+    ├── Registered Tools:    subagent, send_message, team_create, team_delete
+    ├── Registered Tools:    task_create, task_update, task_output, task_list, task_resume
+    ├── Registered Commands: /coordinator
+    ├── Event Handlers:      before_agent_start, agent_end, session_start
+    ├── Message Renderers:   aim-task-event
+    │
+    ├── Core orchestration
+    │   ├── agent-executor.ts    Subagent execution engine (lifecycle encapsulated)
+    │   ├── worker-pool.ts       Child process management (print + RPC modes)
+    │   ├── subagent-tool.ts     LLM-callable tool (mode routing + TUI rendering)
+    │   ├── coordinator.ts       Coordinator mode (prompt loaded from prompts/)
+    │   ├── teams.ts             Team creation, teammate spawning
+    │   └── swarm.ts             Swarm orchestration
+    │
+    ├── Task system
+    │   ├── shared-tasks.ts      File-based task list (locking, state machine, deps)
+    │   ├── task-*-tool.ts       LLM-callable task tools
+    │   ├── task-render.ts       TUI rendering for tasks (kanban, dashboard)
+    │   ├── task-progress.ts     Real-time progress tracking
+    │   ├── task-foreground.ts   Foreground/background display management
+    │   ├── task-notifications.ts Mailbox-based task notifications
+    │   ├── task-result-storage.ts Overflow protection + result persistence
+    │   ├── task-hooks.ts        Hook system (created/completed/transition)
+    │   └── task-distributor.ts  Idle agent → task assignment
+    │
+    ├── Communication
+    │   ├── mailbox.ts           File-based inbox system
+    │   ├── poller.ts            Teammate inbox polling
+    │   ├── lead-poller.ts       Lead inbox polling + permission handling
+    │   ├── send-message.ts      send_message tool registration
+    │   └── permission-sync.ts   Mailbox-based permission requests
+    │
+    └── Infrastructure
+        ├── types.ts             Shared type definitions + path helpers
+        ├── render.ts            Shared TUI rendering components
+        ├── lock.ts              File locking utility (shared across modules)
+        ├── agent-lifecycle.ts   Unified lifecycle management
+        ├── agent-result.ts      Result formatting + usage aggregation
+        ├── extension-lifecycle.ts  Callback wiring + lifecycle services
+        ├── worktree.ts          Git worktree isolation
+        ├── permissions.ts       Permission system registration
+        ├── permission-matrix.ts Role-based tool filtering
+        ├── agents.ts            Agent discovery from markdown files
+        └── aim-transcript.ts    Sidechain transcript persistence
 ```
+
+### Key Design Decisions
+
+- **File-based locking** (`lock.ts`): Atomic `writeFileSync({ flag: "wx" })` with stale lock detection, shared across `shared-tasks.ts` and `mailbox.ts`
+- **Agent lifecycle** (`agent-lifecycle.ts`): Unified `agentStarted()` → `agentCompleted()`/`agentFailed()` replaces scattered create/cleanup calls
+- **Circular dependency wiring** (`extension-lifecycle.ts`): All cross-module callbacks registered in one place via `wireCallbacks()`
+- **External prompt template** (`prompts/coordinator.md`): Coordinator system prompt loaded from disk, editable without recompilation
 
 ### Tests
 

@@ -43,6 +43,7 @@ import {
 } from "./task-hooks.js";
 import { notifyTaskUnblocked, nudgeVerification, notifyTaskAssignment, notifyTaskCompleted, type TaskNotification } from "./task-notifications.js";
 import { writeToMailbox } from "./mailbox.js";
+import { acquireFileLock } from "./lock.js";
 
 // ============================================================================
 // Options & Callbacks
@@ -106,53 +107,7 @@ function writeHighwaterMark(dir: string, mark: number): void {
   fs.writeFileSync(path.join(dir, HIGHWATERMARK_FILE), String(mark));
 }
 
-// ============================================================================
-// Locking (with stale lock detection)
-// ============================================================================
-
-/** Maximum lock retries before giving up */
-const MAX_LOCK_RETRIES = 30;
-
-/** Locks older than this (ms) are considered stale and force-released */
-const STALE_LOCK_MS = 10_000;
-
-/**
- * Acquire an exclusive file lock.
- * Stale locks (>10s old) are force-released automatically.
- * Returns a release function that must be called in a finally block.
- * 
- * Thread safety: writeFileSync with { flag: "wx" } is atomic on both
- * POSIX and NTFS. Even if two processes detect the same stale lock
- * simultaneously, only one will succeed in creating the new lock file,
- * preventing double-acquisition.
- */
-async function lock(filePath: string): Promise<() => Promise<void>> {
-  const lockPath = filePath + ".lock";
-  for (let i = 0; i < MAX_LOCK_RETRIES; i++) {
-    try {
-      fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
-      return async () => {
-        try { fs.unlinkSync(lockPath); } catch {}
-      };
-    } catch {
-      // Check for stale lock — safe because writeFileSync with { flag: "wx" }
-      // is atomic. Even if two processes detect the same stale lock, only
-      // one will succeed in creating the replacement lock file.
-      try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
-          // Force-release stale lock and retry immediately
-          try { fs.unlinkSync(lockPath); } catch {}
-          continue;
-        }
-      } catch {
-        // Lock was released between our failed write and stat — retry
-      }
-      await new Promise(r => setTimeout(r, 50 + Math.random() * 50));
-    }
-  }
-  throw new Error(`Could not acquire lock for ${filePath}`);
-}
+// Lock logic extracted to ./lock.ts — import acquireFileLock from there.
 
 // ============================================================================
 // I/O Helpers
@@ -322,7 +277,7 @@ export async function createTask(
 ): Promise<TaskItem> {
   const dir = getTasksDir(cwd, team);
   ensureDir(dir);
-  const release = await lock(listLockPath(cwd, team));
+  const release = await acquireFileLock(listLockPath(cwd, team));
   try {
     // High-water mark: always increment, never reuse
     const hwm = readHighwaterMark(dir);
@@ -429,7 +384,7 @@ export async function updateTask(
   const postLockActions: (() => Promise<void>)[] = [];
   let result: TaskItem | null = null;
 
-  const release = await lock(listLockPath(cwd, team));
+  const release = await acquireFileLock(listLockPath(cwd, team));
   try {
     // TOCTOU-safe: check existence inside the lock
     const fp = taskFilePath(cwd, team, taskId);
@@ -572,7 +527,7 @@ export async function claimTask(
   // Strategy B: list lock for cross-task consistency
   const dir = getTasksDir(cwd, team);
   ensureDir(dir);
-  const release = await lock(listLockPath(cwd, team));
+  const release = await acquireFileLock(listLockPath(cwd, team));
   try {
     // TOCTOU-safe: check existence inside the lock
     if (!fs.existsSync(fp)) {
@@ -646,7 +601,7 @@ export async function blockTask(
 ): Promise<void> {
   const dir = getTasksDir(cwd, team);
   ensureDir(dir);
-  const release = await lock(listLockPath(cwd, team));
+  const release = await acquireFileLock(listLockPath(cwd, team));
   try {
     // Self-dependency check
     if (blockerId === blockedId) {
@@ -711,7 +666,7 @@ export async function unblockTask(
 ): Promise<void> {
   const dir = getTasksDir(cwd, team);
   ensureDir(dir);
-  const release = await lock(listLockPath(cwd, team));
+  const release = await acquireFileLock(listLockPath(cwd, team));
   try {
     const blocker = readTaskFile(cwd, team, blockerId);
     const blocked = readTaskFile(cwd, team, blockedId);
@@ -760,7 +715,7 @@ export async function deleteTask(
   let wasForceKilled = false;
   let deletedTaskOwner: string | undefined;
 
-  const release = await lock(listLockPath(cwd, team));
+  const release = await acquireFileLock(listLockPath(cwd, team));
   try {
     // TOCTOU-safe: check existence inside the lock
     const fp = taskFilePath(cwd, team, taskId);
@@ -1056,7 +1011,7 @@ async function propagateFailureToBlocked(
   let freshSnapshot: TaskItem[] = [];
   const dir = getTasksDir(cwd, team);
   ensureDir(dir);
-  const release = await lock(listLockPath(cwd, team));
+  const release = await acquireFileLock(listLockPath(cwd, team));
   try {
     for (const item of toFail) {
       // Re-read fresh state inside the lock (may have changed since BFS scan)

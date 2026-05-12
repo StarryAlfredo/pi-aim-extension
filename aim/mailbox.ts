@@ -14,38 +14,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { TeammateMessage } from "./types.js";
 import { getInboxesDir } from "./types.js";
+import { acquireFileLock } from "./lock.js";
 
-// ============================================================================
-// Locking
-// ============================================================================
-
-/** Acquire a file lock for the given file path. Returns unlock function.
- *  Stale locks (>10s old) are force-released automatically. */
-async function lock(filePath: string): Promise<() => Promise<void>> {
-  const lockPath = filePath + ".lock";
-  const MAX_LOCK_RETRIES = 30;
-  const STALE_LOCK_MS = 10_000;
-  for (let i = 0; i < MAX_LOCK_RETRIES; i++) {
-    try {
-      fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
-      return async () => {
-        try { fs.unlinkSync(lockPath); } catch {}
-      };
-    } catch {
-      try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
-          try { fs.unlinkSync(lockPath); } catch {}
-          continue;
-        }
-      } catch {
-        // Lock was released between our failed write and stat — retry
-      }
-      await new Promise(r => setTimeout(r, 50 + Math.random() * 50));
-    }
-  }
-  throw new Error(`Could not acquire lock for ${filePath}`);
-}
+// Lock logic extracted to ./lock.ts — import acquireFileLock from there.
 
 // ============================================================================
 // Path Helpers
@@ -118,7 +89,7 @@ export async function writeToMailbox(
 
   const fullMsg: TeammateMessage = { ...msg, read: false };
 
-  const release = await lock(inboxPath);
+  const release = await acquireFileLock(inboxPath);
   try {
     const existing = await readMailbox(cwd, recipient, teamName);
     existing.push(fullMsg);
@@ -136,7 +107,7 @@ export async function markMessageAsRead(
   index: number,
 ): Promise<void> {
   const inboxPath = getInboxPath(cwd, agentName, teamName);
-  const release = await lock(inboxPath);
+  const release = await acquireFileLock(inboxPath);
   try {
     const all = await readMailbox(cwd, agentName, teamName);
     if (index >= 0 && index < all.length && all[index]) {

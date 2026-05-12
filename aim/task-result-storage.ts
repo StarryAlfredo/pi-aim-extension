@@ -13,7 +13,7 @@
  *   - Parent agent uses the read tool to access full output
  *
  * Integration points:
- *   - index.ts: calls handleResultOverflow() on every SingleResult
+ *   - subagent-tool.ts: calls handleResultOverflow() / handleBatchOverflow() for display
  *   - task-output-tool.ts: calls readPersistedResult() for completed tasks
  *   - render.ts: calls isResultPersisted() to show file reference in TUI
  */

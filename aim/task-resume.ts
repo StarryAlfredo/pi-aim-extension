@@ -28,7 +28,7 @@ import { createDisplayState, markCompleted, removeDisplayState } from "./task-fo
 import { workerPool } from "./worker-pool.js";
 import { createWorktree, removeWorktreeByBase } from "./worktree.js";
 import { recordSubagentSpawn, recordSubagentResult, appendToTranscript } from "./aim-transcript.js";
-import { getFinalOutput } from "./render.js";
+import { getFinalOutput } from "./agent-result.js";
 import { discoverAgents } from "./agents.js";
 import type { TaskItem, WorkerInfo } from "./types.js";
 import type { Message } from "@mariozechner/pi-ai";

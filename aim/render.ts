@@ -11,6 +11,8 @@ import { Container, Markdown, Text, Spacer } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import * as os from "node:os";
+import { getFinalOutput } from "./agent-result.js";
+import type { AgentExecutionResult } from "./agent-executor.js";
 // P3: Progress rendering
 import { getProgressTracker, generateCompactSummary, type TaskProgress } from "./task-progress.js";
 // P4: Foreground/background display
@@ -126,17 +128,7 @@ export function getDisplayItems(messages: Message[]): DisplayItem[] {
   return items;
 }
 
-export function getFinalOutput(messages: Message[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === "assistant") {
-      for (const part of msg.content) {
-        if (part.type === "text") return part.text;
-      }
-    }
-  }
-  return "";
-}
+
 
 export function renderDisplayItems(items: DisplayItem[], theme: Theme, limit?: number): string {
   const toShow = limit ? items.slice(-limit) : items;
@@ -169,7 +161,8 @@ export function renderSubagentResult(
 
   const mdTheme = getMarkdownTheme();
   const rawResult = result.details as Record<string, unknown> | undefined;
-  const messages = (rawResult?.messages ?? []) as Message[];
+  const execResult = rawResult?.result as AgentExecutionResult | undefined;
+  const messages = execResult?.messages ?? [];
   const displayItems = getDisplayItems(messages);
   const finalOutput = getFinalOutput(messages);
   const isError = stopReason === "error" || stopReason === "aborted";

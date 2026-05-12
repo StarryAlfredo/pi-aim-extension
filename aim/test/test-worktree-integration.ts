@@ -1,9 +1,9 @@
 /**
  * Worktree Integration — Test Suite (TDD: expects FAILURE on first run)
  *
- * Tests that the subagent tool in index.ts automatically wraps agent
+ * Tests that the subagent tool (via agent-executor.ts) automatically wraps agent
  * execution in a Git worktree. This is the "real integration" test —
- * it exercises the actual runSingleAgent() code path from index.ts,
+ * it exercises the actual executeAgent() code path from agent-executor.ts,
  * NOT a standalone worktree helper.
  *
  * Tests that SHOULD FAIL before implementation:
