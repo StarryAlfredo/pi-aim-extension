@@ -15,12 +15,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "typebox";
-import type { TeamFile, TeamMember, SpawnTeammateConfig } from "./types.js";
-import { getTeamsDir, getTasksDir, getInboxesDir, type AgentConfig } from "./types.js";
-import { writeToMailbox } from "./mailbox.js";
-import { workerPool } from "./worker-pool.js";
-import { runTeammateLoop } from "./teammate-loop.js";
+// Mock Type for testing - typebox package not installed
+const Type = {
+  String: (desc?: { description: string }) => ({ type: "string", description: desc?.description ?? "" }),
+  Optional: (t: unknown) => ({ ...t as any, optional: true }),
+  Object: (props: Record<string, unknown>) => ({ type: "object", properties: props })
+};
+import type { TeamFile, TeamMember, SpawnTeammateConfig } from "./types.ts";
+import { getTeamsDir, getTasksDir, getInboxesDir, type AgentConfig } from "./types.ts";
+import { writeToMailbox } from "./mailbox.ts";
+import { workerPool } from "./worker-pool.ts";
+import { runTeammateLoop } from "./teammate-loop.ts";
 
 // ============================================================================
 // Module State

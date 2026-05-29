@@ -33,17 +33,17 @@ import {
   type TaskItem,
   type TaskStatus,
   type TaskType,
-} from "./types.js";
+} from "./types.ts";
 
 import {
   executeTaskCreatedHooks,
   executeTaskCompletedHooks,
   executeTaskTransitionHooks,
   type HookContext,
-} from "./task-hooks.js";
-import { notifyTaskUnblocked, nudgeVerification, notifyTaskAssignment, notifyTaskCompleted, type TaskNotification } from "./task-notifications.js";
-import { writeToMailbox } from "./mailbox.js";
-import { acquireFileLock } from "./lock.js";
+} from "./task-hooks.ts";
+import { notifyTaskUnblocked, nudgeVerification, notifyTaskAssignment, notifyTaskCompleted, type TaskNotification } from "./task-notifications.ts";
+import { writeToMailbox } from "./mailbox.ts";
+import { acquireFileLock } from "./lock.ts";
 
 // ============================================================================
 // Options & Callbacks
@@ -1133,7 +1133,7 @@ export {
   type TaskCreatedHook,
   type TaskCompletedHook,
   type TaskTransitionHook,
-} from "./task-hooks.js";
+} from "./task-hooks.ts";
 
 // ============================================================================
 // P0/P1: Re-export options & infrastructure types

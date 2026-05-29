@@ -23,14 +23,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@mariozechner/pi-ai";
-import type { WorkerConfig, WorkerInfo, WorkerState } from "./types.js";
+import type { WorkerConfig, WorkerInfo, WorkerState } from "./types.ts";
 import {
   recordToolUse,
   recordTokenUsage,
   recordTurn,
   recordStatusChange,
   recordError,
-} from "./task-progress.js";
+} from "./task-progress.ts";
 
 // ============================================================================
 // Helpers
@@ -40,72 +40,128 @@ function fileExists(p: string): boolean {
   try { fs.statSync(p); return true; } catch { return false; }
 }
 
-/** Get the pi executable path */
+/**
+ * Resolve pi's CLI entry point (cli.js) reliably across all platforms
+ * and installation methods.
+ *
+ * Strategy (ordered by reliability):
+ *   1. npm root -g → find the global pi installation (works everywhere)
+ *   2. process.argv[1] → if running as pi directly (dev mode)
+ *   3. which/where pi → fallback, parse the wrapper to extract cli.js path
+ *
+ * Always returns { command: nodeExe, args: [cliJs] } — never .cmd files
+ * or shell:true, which break on MSYS2/Cygwin/MINGW environments.
+ */
 function getPiCommand(): { command: string; args: string[] } {
-  // On Windows, prefer resolving the JS entry point directly.
-  // `where pi` returns .cmd wrappers and POSIX scripts that require
-  // shell:true to execute, which can interfere with stdio piping.
-  // Using node + cli.js avoids shell mode entirely.
-  if (process.platform === "win32" && process.execPath) {
-    const nodeDir = path.dirname(process.execPath);
-    const cliCandidates = [
-      path.join(nodeDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
-      path.join(nodeDir, "node_modules", "@mariozechner", "pi-coding-agent", "dist", "cli.js"),
-    ];
-    for (const cliJs of cliCandidates) {
+  // Strategy 1: npm root -g — finds the global node_modules directory.
+  // Works regardless of where Node.js is installed (portable, nvm, global npm).
+  // This is the same mechanism npm itself uses to locate global packages.
+  try {
+    const { execSync } = require("node:child_process");
+    const npmRoot = execSync("npm root -g", {
+      encoding: "utf-8",
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+    if (npmRoot) {
+      const cliJs = path.join(
+        npmRoot,
+        "@earendil-works",
+        "pi-coding-agent",
+        "dist",
+        "cli.js",
+      );
       if (fileExists(cliJs)) {
         return { command: process.execPath, args: [cliJs] };
       }
     }
+  } catch {
+    // npm root -g failed — continue to next strategy
   }
 
-  // Try which/where for cross-platform reliability (non-Windows primary path)
+  // Strategy 2: process.argv[1] — the script currently being executed.
+  // In a pi process, this is cli.js. Works for direct node invocations.
+  const argv1 = process.argv[1];
+  if (argv1 && fileExists(argv1)) {
+    const baseName = path.basename(argv1);
+    if (baseName === "cli.js" || baseName === "pi" || baseName === "pi.js") {
+      return { command: process.execPath, args: [argv1] };
+    }
+  }
+
+  // Strategy 3: which/where pi — parse the wrapper script to extract the
+  // real cli.js path from node_modules, then invoke via node directly.
+  // Avoids .cmd + shell:true which fails on MSYS2/Cygwin/MINGW.
   try {
-    const { execSync } = require("node:child_process");
+    const { execSync: es2 } = require("node:child_process");
     const whichCmd = process.platform === "win32" ? "where pi" : "which pi";
-    const result = execSync(whichCmd, { encoding: "utf-8", timeout: 3000 }).trim();
+    const result = es2(whichCmd, {
+      encoding: "utf-8",
+      timeout: 3000,
+      windowsHide: true,
+    }).trim();
     if (result) {
+      const firstLine = result.split("\n")[0]!.trim();
+
       if (process.platform === "win32") {
-        // On Windows, prefer .cmd files over POSIX shell scripts.
-        // These require shell:true in spawn() to execute properly.
-        const lines = result.split("\n").map((l: string) => l.trim()).filter(Boolean);
-        const cmdFile = lines.find((l: string) => l.endsWith(".cmd"));
-        if (cmdFile) {
-          return { command: cmdFile, args: [] };
+        // The .cmd wrapper references: "%dp0%\node_modules\@earendil-works\pi-coding-agent\dist\cli.js"
+        // We can derive the cli.js path from the .cmd location.
+        // If the .cmd is at: <npm_prefix>/pi.cmd
+        // Then cli.js is at: <npm_prefix>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+        const cmdDir = path.dirname(firstLine);
+        const cliJs = path.join(
+          cmdDir,
+          "node_modules",
+          "@earendil-works",
+          "pi-coding-agent",
+          "dist",
+          "cli.js",
+        );
+        if (fileExists(cliJs)) {
+          return { command: process.execPath, args: [cliJs] };
+        }
+      } else {
+        // On Unix, which pi returns a POSIX shell script.
+        // Parse it to find the cli.js path (used as fallback).
+        if (fileExists(firstLine)) {
+          try {
+            const content = fs.readFileSync(firstLine, "utf-8");
+            // Look for: exec node "...cli.js" or exec .../node_modules/.../cli.js
+            const cliMatch = content.match(
+              /node_modules\/@earendil-works\/pi-coding-agent\/dist\/cli\.js/,
+            );
+            if (cliMatch) {
+              const scriptDir = path.dirname(firstLine);
+              const cliJs = path.join(scriptDir, cliMatch[0]);
+              if (fileExists(cliJs)) {
+                return { command: process.execPath, args: [cliJs] };
+              }
+            }
+          } catch {
+            // Can't read the script — fall through
+          }
         }
       }
-      const firstLine = result.split("\n")[0]!.trim();
-      return { command: firstLine, args: [] };
     }
   } catch {
-    // which/where failed — fall through to manual path resolution
+    // which/where failed — fall through
   }
 
-  const execPath = process.argv[1];
-  if (execPath && fileExists(execPath)) {
-    return { command: process.execPath, args: [execPath] };
-  }
-
-  // On Windows: fallback if cli.js resolution above failed.
-  // Try additional locations for the JS entry point.
-  if (process.platform === "win32" && process.execPath) {
-    const nodeDir = path.dirname(process.execPath);
-    // Fallback: try the .bin symlink path
-    const binCliJs = path.join(nodeDir, "node_modules", ".bin", "pi");
-    if (fileExists(binCliJs)) {
-      return { command: process.execPath, args: [binCliJs] };
-    }
-  }
-
+  // Strategy 4: absolute last resort. Try to locate cli.js relative to the
+  // Node.js binary's directory (works for portable/bundled installs).
   if (process.execPath) {
     const nodeDir = path.dirname(process.execPath);
     const candidates = [
-      path.join(nodeDir, "pi"),
-      path.join(nodeDir, "node_modules", ".bin", "pi"),
+      path.join(nodeDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      path.join(nodeDir, "node_modules", "@mariozechner", "pi-coding-agent", "dist", "cli.js"),
     ];
-    for (const c of candidates) { if (fileExists(c)) return { command: c, args: [] }; }
+    for (const c of candidates) {
+      if (fileExists(c)) return { command: process.execPath, args: [c] };
+    }
   }
 
+  // Last resort: hope pi/pi.cmd is on PATH and shell:true works.
+  // This may fail on MSYS2/Cygwin/MINGW but there's nothing else to try.
   const isWin = process.platform === "win32";
   return { command: isWin ? "pi.cmd" : "pi", args: [] };
 }
@@ -167,18 +223,27 @@ export class WorkerPool {
     const teamName = (config as Record<string, unknown>).team_name as string | undefined;
     if (teamName) envExtra.TEAMMATE_TEAM = teamName;
 
+    // Determine shell mode: only needed if we fell through to a .cmd/.bat
+    // wrapper. The preferred path (npm root -g → cli.js) uses node.exe + cli.js
+    // directly, which never needs shell:true.
+    const needsShell =
+      process.platform === "win32" && piCmd.command.endsWith(".cmd");
+
     const proc = spawn(piCmd.command, [...piCmd.args, ...args], {
       cwd: config.cwd ?? process.cwd(),
-      stdio: isRpc ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+      // Always use pipe for stdin on Windows print mode, then close it.
+      // stdio: 'ignore' for stdin causes pi subprocesses to hang on
+      // MSYS2/Cygwin/MINGW due to how those environments emulate stdio.
+      stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...envExtra },
-      // On Windows, spawn() cannot directly execute .cmd files (EINVAL) or
-      // POSIX shell scripts (ENOENT). Using shell:true allows cmd.exe to
-      // properly resolve and execute .cmd wrappers.
-      // However, when using node.exe + cli.js directly (the preferred path
-      // on Windows), shell:true is NOT needed and would interfere with
-      // stdio piping.
-      shell: process.platform === "win32" && piCmd.command.endsWith(".cmd"),
+      shell: needsShell,
     });
+
+    // Close stdin immediately for print mode — pi doesn't read stdin
+    // in print mode and an open-but-unused pipe can cause hangs on MSYS2.
+    if (!isRpc && proc.stdin) {
+      proc.stdin.end();
+    }
 
     const info: WorkerInfo = {
       config: fullConfig,
@@ -409,10 +474,19 @@ export class WorkerPool {
   getInfo(workerId: string): WorkerInfo | undefined { return this.workers.get(workerId); }
   getAll(): WorkerInfo[] { return Array.from(this.workers.values()); }
 
-  async waitFor(workerId: string): Promise<WorkerInfo> {
+  async waitFor(workerId: string, timeoutMs?: number): Promise<WorkerInfo> {
     const info = this.workers.get(workerId);
     if (!info) throw new Error(`Worker not found: ${workerId}`);
-    await info.donePromise;
+    
+    if (timeoutMs && timeoutMs > 0) {
+      // Race between donePromise and timeout
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`Worker ${workerId} timed out after ${timeoutMs}ms`)), timeoutMs);
+      });
+      await Promise.race([info.donePromise, timeoutPromise]);
+    } else {
+      await info.donePromise;
+    }
     return info;
   }
 

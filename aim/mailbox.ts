@@ -12,112 +12,169 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { TeammateMessage } from "./types.js";
-import { getInboxesDir } from "./types.js";
-import { acquireFileLock } from "./lock.js";
-
-// Lock logic extracted to ./lock.ts — import acquireFileLock from there.
+import type { TeammateMessage } from "./types.ts";
+import { getInboxesDir } from "./types.ts";
+import { acquireFileLock } from "./lock.ts";
 
 // ============================================================================
-// Path Helpers
+// Mailbox Class
 // ============================================================================
 
-/** Get the file path for a specific agent's inbox */
-function getInboxPath(cwd: string, agentName: string, teamName: string): string {
-  const safeName = agentName.replace(/[<>:"/\\|?*]/g, "_");
-  const dir = getInboxesDir(cwd, teamName);
-  return path.join(dir, `${safeName}.json`);
-}
+/**
+ * Manages file-based inbox operations for inter-agent communication.
+ * Encapsulates the cwd and team context, providing a cleaner API
+ * for mailbox operations.
+ */
+export class Mailbox {
+  readonly #cwd: string;
+  readonly #teamName: string;
 
-/** Ensure the inbox directory exists (safe for concurrent calls) */
-function ensureDir(dir: string) {
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch (err: any) {
-    // EEXIST is fine in race conditions
-    if (err.code !== "EEXIST") throw err;
+  constructor(cwd: string, teamName: string) {
+    if (typeof cwd !== "string") throw new Error(`Mailbox cwd must be string, got ${typeof cwd}`);
+    if (typeof teamName !== "string") throw new Error(`Mailbox teamName must be string, got ${typeof teamName}`);
+    this.#cwd = cwd;
+    this.#teamName = teamName;
+  }
+
+  /**
+   * Get the file path for a specific agent's inbox
+   */
+  private getInboxPath(agentName: string): string {
+    const safeName = agentName.replace(/[<>:"/\\|?*]/g, "_");
+    const dir = getInboxesDir(this.#cwd, this.#teamName);
+    console.log(`getInboxPath: cwd=${this.#cwd}, team=${this.#teamName}, dir=${dir} (type: ${typeof dir})`);
+    const fullPath = path.join(dir, `${safeName}.json`);
+    console.log(`  fullPath=${fullPath} (type: ${typeof fullPath})`);
+    return fullPath;
+  }
+
+  /**
+   * Read all messages from an agent's inbox
+   */
+  async read(agentName: string): Promise<TeammateMessage[]> {
+    const inboxPath = this.getInboxPath(agentName);
+    try {
+      const raw = fs.readFileSync(inboxPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed as TeammateMessage[];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Read only unread messages
+   */
+  async readUnread(agentName: string): Promise<TeammateMessage[]> {
+    const all = await this.read(agentName);
+    return all.filter((m) => !m.read);
+  }
+
+  /**
+   * Write a message to an agent's inbox
+   */
+  async write(recipient: string, msg: Omit<TeammateMessage, "read">): Promise<void> {
+    const inboxPath = this.getInboxPath(recipient);
+    const dir = path.dirname(inboxPath);
+
+    // Ensure directory exists BEFORE acquiring lock and writing (safe for concurrent calls)
+    // Create all parent directories recursively, ignoring only EEXIST errors
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err: any) {
+      // Only ignore "directory already exists" errors
+      // Other errors (permission, invalid path) should propagate
+      if (err.code !== "EEXIST") throw err;
+    }
+
+    const fullMsg: TeammateMessage = { ...msg, read: false };
+
+    const release = await acquireFileLock(inboxPath);
+    try {
+      const existing = await this.read(recipient);
+      existing.push(fullMsg);
+      fs.writeFileSync(inboxPath, JSON.stringify(existing, null, 2), "utf-8");
+    } finally {
+      await release();
+    }
+  }
+
+  /**
+   * Mark a specific message as read by index
+   */
+  async markAsRead(agentName: string, index: number): Promise<void> {
+    const inboxPath = this.getInboxPath(agentName);
+    const release = await acquireFileLock(inboxPath);
+    try {
+      const all = await this.read(agentName);
+      if (index >= 0 && index < all.length && all[index]) {
+        all[index]!.read = true;
+        fs.writeFileSync(inboxPath, JSON.stringify(all, null, 2), "utf-8");
+      }
+    } finally {
+      await release();
+    }
   }
 }
 
 // ============================================================================
-// Public API
+// Backward-Compatible Functional API
 // ============================================================================
 
-/** Read all messages from an agent's inbox */
+/**
+ * Read all messages from an agent's inbox
+ */
 export async function readMailbox(
   cwd: string,
   agentName: string,
   teamName: string,
 ): Promise<TeammateMessage[]> {
-  const inboxPath = getInboxPath(cwd, agentName, teamName);
-  try {
-    const raw = fs.readFileSync(inboxPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as TeammateMessage[];
-  } catch {
-    return [];
-  }
+  const mailbox = new Mailbox(cwd, teamName);
+  return mailbox.read(agentName);
 }
 
-/** Read only unread messages */
+/**
+ * Read only unread messages
+ */
 export async function readUnreadMessages(
   cwd: string,
   agentName: string,
   teamName: string,
 ): Promise<TeammateMessage[]> {
-  const all = await readMailbox(cwd, agentName, teamName);
-  return all.filter((m) => !m.read);
+  const mailbox = new Mailbox(cwd, teamName);
+  return mailbox.readUnread(agentName);
 }
 
-/** Write a message to an agent's inbox */
+/**
+ * Write a message to an agent's inbox
+ */
 export async function writeToMailbox(
   cwd: string,
   recipient: string,
   msg: Omit<TeammateMessage, "read">,
   teamName: string,
 ): Promise<void> {
-  const inboxPath = getInboxPath(cwd, recipient, teamName);
-  const dir = path.dirname(inboxPath);
-
-  // Ensure directory exists BEFORE acquiring lock and writing (safe for concurrent calls)
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch (err: any) {
-    if (err.code !== "EEXIST") throw err;
-  }
-
-  const fullMsg: TeammateMessage = { ...msg, read: false };
-
-  const release = await acquireFileLock(inboxPath);
-  try {
-    const existing = await readMailbox(cwd, recipient, teamName);
-    existing.push(fullMsg);
-    fs.writeFileSync(inboxPath, JSON.stringify(existing, null, 2), "utf-8");
-  } finally {
-    await release();
-  }
+  const mailbox = new Mailbox(cwd, teamName);
+  return mailbox.write(recipient, msg);
 }
 
-/** Mark a specific message as read by index */
+/**
+ * Mark a specific message as read by index
+ */
 export async function markMessageAsRead(
   cwd: string,
   agentName: string,
   teamName: string,
   index: number,
 ): Promise<void> {
-  const inboxPath = getInboxPath(cwd, agentName, teamName);
-  const release = await acquireFileLock(inboxPath);
-  try {
-    const all = await readMailbox(cwd, agentName, teamName);
-    if (index >= 0 && index < all.length && all[index]) {
-      all[index].read = true;
-      fs.writeFileSync(inboxPath, JSON.stringify(all, null, 2), "utf-8");
-    }
-  } finally {
-    await release();
-  }
+  const mailbox = new Mailbox(cwd, teamName);
+  return mailbox.markAsRead(agentName, index);
 }
+
+// ============================================================================
+// Utility Functions (not part of the class — stateless)
+// ============================================================================
 
 /** Check if a text payload is a shutdown request */
 export function isShutdownRequest(text: string): { request_id: string; from: string; reason?: string } | null {

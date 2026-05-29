@@ -270,7 +270,19 @@ async function executeResume(
   // Foreground resume: display state was already created by agentResumed()
 
   try {
-    const result = await workerPool.waitFor(workerId);
+    // Use timeout to prevent infinite hangs
+    const timeoutMs = DEFAULT_FOREGROUND_TIMEOUT_MS;
+    const result = await workerPool.waitFor(workerId, timeoutMs).catch(err => {
+      // Timeout or other error - kill the worker and return error
+      console.warn(`[aim] Worker ${workerId} failed: ${err.message}`);
+      workerPool.kill(workerId);
+      return null;
+    });
+    
+    if (!result) {
+      return buildErrorResult(params, `Worker timed out after ${timeoutMs}ms`, agentId, true);
+    }
+    
     const usage = collectUsageFromMessages(result.messages);
     const output = getFinalOutput(result.messages);
     const lastAssistant = result.messages.filter(m => m.role === "assistant").pop() as Record<string, unknown> | undefined;
@@ -431,7 +443,19 @@ async function executeForeground(
   }
 
   try {
-    const result = await workerPool.waitFor(workerId);
+    // Use timeout to prevent infinite hangs
+    const timeoutMs = DEFAULT_FOREGROUND_TIMEOUT_MS;
+    const result = await workerPool.waitFor(workerId, timeoutMs).catch(err => {
+      // Timeout or other error - kill the worker and return error
+      console.warn(`[aim] Worker ${workerId} failed: ${err.message}`);
+      workerPool.kill(workerId);
+      return null;
+    });
+    
+    if (!result) {
+      return buildErrorResult(params, `Worker timed out after ${timeoutMs}ms`, agentId);
+    }
+    
     const usage = collectUsageFromMessages(result.messages);
     const output = getFinalOutput(result.messages);
     const lastAssistant = result.messages.filter(m => m.role === "assistant").pop() as Record<string, unknown> | undefined;

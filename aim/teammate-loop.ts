@@ -8,14 +8,27 @@
  *
  * Follows Claude Code's inProcessRunner pattern: the team leader
  * owns the poll loop, feeding work to teammate workers as it arrives.
+ *
+ * Timeout handling:
+ *   - DEFAULT_WORKER_IDLE_TIMEOUT_MS: Maximum time to wait for a worker to
+ *     become idle before considering it stuck and killing it.
+ *   - This prevents infinite loops when a worker gets stuck in a tool
+ *     execution or never emits agent_end.
  */
 
-import { pollInbox, sendIdleNotification, type PollResult } from "./poller.js";
-import { workerPool } from "./worker-pool.js";
-import { updateTask, forceTaskStatus } from "./shared-tasks.js";
-import type { WorkerInfo } from "./types.js";
+import { pollInbox, sendIdleNotification, type PollResult } from "./poller.ts";
+import { workerPool } from "./worker-pool.ts";
+import { updateTask, forceTaskStatus } from "./shared-tasks.ts";
+import type { WorkerInfo } from "./types.ts";
 // P3: Progress tracking for idle notifications
-import { getProgressTracker, generateCompactSummary, persistProgress } from "./task-progress.js";
+import { getProgressTracker, generateCompactSummary, persistProgress } from "./task-progress.ts";
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/** Default timeout for waiting for a worker to become idle (5 minutes) */
+const DEFAULT_WORKER_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ============================================================================
 // Types
@@ -32,6 +45,8 @@ export interface TeammateLoopConfig {
   taskId?: string;
   /** Agent ID (UUID) for progress tracking — required since progress trackers are keyed by agentId, not agentName */
   agentId?: string;
+  /** Maximum time to wait for worker to become idle (ms). Default: 5 minutes */
+  workerIdleTimeoutMs?: number;
   /** Called when the teammate starts processing a new item */
   onActivity?: (item: PollResult) => void;
   /** Called when the teammate enters idle state */
@@ -85,16 +100,37 @@ export async function runTeammateLoop(config: TeammateLoopConfig): Promise<void>
 
     // If worker is running, wait for it to finish
     if (info.state === "running") {
-      // Wait for next agent_end (poll-based, 200ms interval)
-      await new Promise<void>((resolve) => {
+      // Wait for next agent_end (poll-based, 200ms interval) with timeout
+      const idleTimeout = config.workerIdleTimeoutMs ?? DEFAULT_WORKER_IDLE_TIMEOUT_MS;
+      let waitStart = Date.now();
+      
+      await new Promise<void>((resolve, reject) => {
         const check = setInterval(() => {
           const current = workerPool.getInfo(workerId);
           if (!current || current.state === "dead" || current.state === "idle") {
             clearInterval(check);
             resolve();
+            return;
           }
-          if (signal.aborted) { clearInterval(check); resolve(); }
+          if (signal.aborted) { 
+            clearInterval(check); 
+            resolve(); 
+            return;
+          }
+          // Check timeout
+          if (Date.now() - waitStart > idleTimeout) {
+            clearInterval(check);
+            // Kill the stuck worker
+            try {
+              workerPool.kill(workerId);
+              console.warn(`[aim] Worker ${workerId} timed out after ${idleTimeout}ms, killed`);
+            } catch {}
+            reject(new Error(`Worker ${workerId} timed out waiting for idle state after ${idleTimeout}ms`));
+          }
         }, 200);
+      }).catch(err => {
+        // Timeout error - worker was killed, log and continue
+        console.warn(`[aim] ${err.message}`);
       });
       if (signal.aborted) return;
 

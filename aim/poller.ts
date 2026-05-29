@@ -16,10 +16,10 @@
  *   - Idle notification to leader
  */
 
-import { readUnreadMessages, markMessageAsRead, parseStructuredMessage, writeToMailbox, createIdleNotification } from "./mailbox.js";
-import { findAvailableTask, claimTask, findUnblockedTasks, listTasks, isTerminalStatus, getTask } from "./shared-tasks.js";
-import { findLeastBusyAgent, isAgentBusyStatus, type AgentStatus } from "./agent-status.js";
-import { notifyTaskAssignment, notifyTaskUnblocked, nudgeVerification, type TaskNotification } from "./task-notifications.js";
+import { readUnreadMessages, markMessageAsRead, parseStructuredMessage, writeToMailbox, createIdleNotification } from "./mailbox.ts";
+import { findAvailableTask, claimTask, findUnblockedTasks, listTasks, isTerminalStatus, getTask } from "./shared-tasks.ts";
+import { findLeastBusyAgent, isAgentBusyStatus, type AgentStatus } from "./agent-status.ts";
+import { notifyTaskAssignment, notifyTaskUnblocked, nudgeVerification, type TaskNotification } from "./task-notifications.ts";
 
 // ============================================================================
 // Types

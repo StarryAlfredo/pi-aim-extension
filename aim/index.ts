@@ -64,7 +64,7 @@ import { renderTaskEvent } from "./task-render.js";
 // ============================================================================
 
 export { workerPool } from "./worker-pool.js";
-export { readMailbox, writeToMailbox, markMessageAsRead, isShutdownRequest, isPermissionResponse, createShutdownRequest, createShutdownApproval, createShutdownRejection, createIdleNotification, parseStructuredMessage, createPlanApprovalRequest, createPlanApprovalResponse } from "./mailbox.js";
+export { readMailbox, writeToMailbox, markMessageAsRead, isShutdownRequest, isPermissionResponse, createShutdownRequest, createShutdownApproval, createShutdownRejection, createIdleNotification, parseStructuredMessage, createPlanApprovalRequest, createPlanApprovalResponse, Mailbox } from "./mailbox.js";
 export { discoverAgents, formatAgentList } from "./agents.js";
 export { createTeam, deleteTeam, spawnTeammate, getActiveTeam } from "./teams.js";
 export { pollInbox, sendIdleNotification } from "./poller.js";
@@ -83,6 +83,7 @@ export {
   persistProgress, deletePersistedProgress, loadProgress,
   getProgressTracker, generateProgressSummary, generateCompactSummary,
   formatTokenUsage, formatTokenCount,
+  ProgressTracker, progressTracker,
   type TaskProgress, type TokenUsage, type ActivityEntry,
 } from "./task-progress.js";
 export {
@@ -92,6 +93,7 @@ export {
   getDisplayState, isForeground as isTaskForeground,
   getForegroundTasks, getBackgroundTasks, hasForegroundTasks,
   formatDisplayStateSummary, formatBackgroundTaskList,
+  DisplayManager, displayManager,
   type TaskDisplayState, type TransitionResult,
 } from "./task-foreground.js";
 export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult } from "./aim-transcript.js";
@@ -110,6 +112,7 @@ export {
 export {
   isAgentBusyStatus, getAgentStatus, getTeamAgentStatuses, getTeamStatusSnapshot,
   findLeastBusyAgent, getAgentOpenTasks, formatAgentStatuses,
+  AgentStatusManager,
   type AgentStatus, type AgentBusyState, type TeamAgentStatusSnapshot,
 } from "./agent-status.js";
 export {

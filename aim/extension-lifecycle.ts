@@ -13,7 +13,7 @@ import { registerMarkNudgeSent } from "./task-notifications.js";
 import { startLeadPoller, type PermissionRequestHandler } from "./lead-poller.js";
 import { getActiveTeam } from "./teams.js";
 import { onTransition as onDisplayTransition, onEvict, removeDisplayState, cleanupCompletedDisplayStates } from "./task-foreground.js";
-import { removeProgressTracker, deletePersistedProgress, cleanupStaleProgress, getProgressTracker, generateCompactSummary } from "./task-progress.js";
+import { progressTracker, removeProgressTracker, deletePersistedProgress, cleanupStaleProgress, getProgressTracker, generateCompactSummary } from "./task-progress.js";
 import { cleanupResultFiles } from "./task-result-storage.js";
 
 // ============================================================================
@@ -174,8 +174,8 @@ export function startLifecycleServices(pi: ExtensionAPI): () => void {
 
   // ── Periodic cleanup (5 min interval) ──
   const periodicCleanupTimer = setInterval(() => {
-    import("./task-progress.js").then(({ cleanupStaleProgress }) => {
-      const progressCleaned = cleanupStaleProgress();
+    import("./task-progress.js").then(({ progressTracker: tracker }) => {
+      const progressCleaned = tracker.cleanupStale();
       const displayCleaned = cleanupCompletedDisplayStates();
       const resultFilesCleaned = cleanupResultFiles(process.cwd());
       if (progressCleaned > 0 || displayCleaned > 0 || resultFilesCleaned > 0) {
