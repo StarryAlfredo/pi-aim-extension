@@ -109,6 +109,9 @@ export interface AgentExecutionResult {
 // Constants
 // ============================================================================
 
+/** Maximum time to wait for a foreground agent to complete (5 minutes) */
+const DEFAULT_FOREGROUND_TIMEOUT_MS = 300_000;
+
 // CLEANUP_DELAY_MS and DEFAULT_AUTO_BACKGROUND_MS moved to agent-lifecycle.ts
 
 // ============================================================================
@@ -272,15 +275,20 @@ async function executeResume(
   try {
     // Use timeout to prevent infinite hangs
     const timeoutMs = DEFAULT_FOREGROUND_TIMEOUT_MS;
+    let waitError: string | undefined;
     const result = await workerPool.waitFor(workerId, timeoutMs).catch(err => {
-      // Timeout or other error - kill the worker and return error
-      console.warn(`[aim] Worker ${workerId} failed: ${err.message}`);
+      // Timeout or other error - kill the worker and capture stderr for diagnostics
+      const workerInfo = workerPool.getInfo(workerId);
+      const stderr = workerInfo?.stderr?.trim();
+      const detail = stderr ? `: ${stderr.slice(0, 300)}` : "";
+      waitError = `${err.message}${detail}`;
+      console.warn(`[aim] Worker ${workerId} failed: ${waitError}`);
       workerPool.kill(workerId);
       return null;
     });
     
     if (!result) {
-      return buildErrorResult(params, `Worker timed out after ${timeoutMs}ms`, agentId, true);
+      return buildErrorResult(params, waitError || `Worker ${workerId} failed after ${timeoutMs}ms`, agentId, true);
     }
     
     const usage = collectUsageFromMessages(result.messages);
@@ -445,15 +453,20 @@ async function executeForeground(
   try {
     // Use timeout to prevent infinite hangs
     const timeoutMs = DEFAULT_FOREGROUND_TIMEOUT_MS;
+    let waitErrorFg: string | undefined;
     const result = await workerPool.waitFor(workerId, timeoutMs).catch(err => {
-      // Timeout or other error - kill the worker and return error
-      console.warn(`[aim] Worker ${workerId} failed: ${err.message}`);
+      // Timeout or other error - kill the worker and capture stderr for diagnostics
+      const workerInfo = workerPool.getInfo(workerId);
+      const stderr = workerInfo?.stderr?.trim();
+      const detail = stderr ? `: ${stderr.slice(0, 300)}` : "";
+      waitErrorFg = `${err.message}${detail}`;
+      console.warn(`[aim] Worker ${workerId} failed: ${waitErrorFg}`);
       workerPool.kill(workerId);
       return null;
     });
     
     if (!result) {
-      return buildErrorResult(params, `Worker timed out after ${timeoutMs}ms`, agentId);
+      return buildErrorResult(params, waitErrorFg || `Worker ${workerId} failed after ${timeoutMs}ms`, agentId);
     }
     
     const usage = collectUsageFromMessages(result.messages);

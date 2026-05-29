@@ -198,9 +198,10 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
             { agent: s.agent, task: s.task.replace(/\{previous\}/g, prev), cwd: s.cwd, model: s.model },
           );
           results.push(result);
-          if (result.exitCode !== 0 && result.stopReason !== undefined) {
+          if (result.exitCode !== 0) {
             const err = formatResultError(result);
-            return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${s.agent}): ${err}` }], details: { mode: "chain", results, error: true }, isError: true };
+            const reason = result.stopReason || "exited with error";
+            return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${s.agent}) — ${reason}: ${err}` }], details: { mode: "chain", results, error: true }, isError: true };
           }
           prev = result.output;
         }
@@ -248,9 +249,10 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
         if (result.exitCode === -1) {
           return { content: [{ type: "text", text: `Background agent "${params.agent}" launched. Agent ID: ${result.agentId}. Use resume: to continue.` }], details: { mode: "single", background: true, agentId: result.agentId } };
         }
-        if (result.exitCode !== 0 && result.stopReason !== undefined) {
+        if (result.exitCode !== 0) {
           const err = formatResultError(result);
-          return { content: [{ type: "text", text: `Agent ${result.stopReason}: ${err}` }], details: { mode: "single", result }, isError: true };
+          const reason = result.stopReason || "exited with error";
+          return { content: [{ type: "text", text: `Agent ${reason}: ${err}` }], details: { mode: "single", result }, isError: true };
         }
         return { content: [{ type: "text", text: handleResultOverflow(cwd, result.agentId, result.output || "(no output)").display }], details: { mode: "single", result } };
       }
