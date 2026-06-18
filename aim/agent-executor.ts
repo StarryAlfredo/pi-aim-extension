@@ -10,8 +10,8 @@
  * All orchestration of the 6+ subsystems is handled internally.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { Message } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
 
 import { workerPool } from "./worker-pool.js";
 import { discoverAgents } from "./agents.js";

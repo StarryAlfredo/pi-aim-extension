@@ -211,6 +211,7 @@ async function test2_claimTaskAndRun(cwd: string) {
 
     // Claim the task via real AIM claimTask
     const claimed = await aimClaimTask(cwd, team, task.id, "worker-1");
+    if ('rejected' in claimed) throw new Error('claim rejected: ' + claimed.reason);
     assert("task" in claimed, "task claimed via real claimTask", `claimed id: ${claimed.task?.id}`);
     assert(claimed.task?.status === "in_progress", "task status is in_progress", "");
     assert(claimed.task?.owner === "worker-1", "task owner set", "");
@@ -381,7 +382,7 @@ async function test5_planApproval(cwd: string) {
     const planMsg = leaderInbox.find((m: any) => !m.read);
     assert(!!planMsg, "leader received plan request", "");
 
-    const plan = JSON.parse(planMsg.text) as Record<string, unknown>;
+    const plan = JSON.parse(planMsg!.text) as Record<string, unknown>;
     assert(plan.type === "plan_approval_request", "parsed as plan_approval_request", "type: " + plan.type);
     assert((plan.plan as string).includes("validate.ts:42"), "plan contains file details", "");
 
@@ -398,7 +399,7 @@ async function test5_planApproval(cwd: string) {
     const workerInbox = await readMailbox(cwd, "worker-1", team);
     const approvalMsg = workerInbox.find((m: any) => !m.read);
     assert(!!approvalMsg, "worker received plan response", "");
-    const approvalParsed = JSON.parse(approvalMsg.text) as Record<string, unknown>;
+    const approvalParsed = JSON.parse(approvalMsg!.text) as Record<string, unknown>;
     assert(approvalParsed.type === "plan_approval_response", "approval parsed correctly", "");
     assert(approvalParsed.approved === true, "plan approved", "");
 
@@ -453,6 +454,7 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
     // Worker 1 claims task #1
     log("task-claim", "worker 1 claiming task via real claimTask");
     const claimed1 = await aimClaimTask(cwd, team, t1.id, "worker-1");
+    if ('rejected' in claimed1) throw new Error('claim rejected: ' + claimed1.reason);
     assert("task" in claimed1, "w1 claimed task #1", `status: ${claimed1.task?.status}`);
 
     s1({ type: "prompt", message: `you claimed task #${claimed1.task?.id}: ${claimed1.task?.subject}. reply with 'task1_done_by_w1'` });
@@ -469,6 +471,7 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
     // Worker 2 claims task #2
     log("task-claim", "worker 2 claiming task via real claimTask");
     const claimed2 = await aimClaimTask(cwd, team, t2.id, "worker-2");
+    if ('rejected' in claimed2) throw new Error('claim rejected: ' + claimed2.reason);
     assert("task" in claimed2, "w2 claimed task #2", `status: ${claimed2.task?.status}`);
 
     s2({ type: "prompt", message: `you claimed task #${claimed2.task?.id}: ${claimed2.task?.subject}. reply with 'task2_done_by_w2'` });
@@ -492,6 +495,7 @@ async function test6_e2eTwoWorkersTaskList(cwd: string) {
     // Now task #3 is unblocked → claim it
     log("task-claim", "task #3 unblocked → worker 1 claims via real claimTask");
     const claimed3 = await aimClaimTask(cwd, team, t3.id, "worker-1");
+    if ('rejected' in claimed3) throw new Error('claim rejected: ' + claimed3.reason);
     assert("task" in claimed3, "w1 claimed task #3 (unblocked after deps completed)", `status: ${claimed3.task?.status}`);
 
     s1({ type: "prompt", message: `you claimed task #${claimed3.task?.id}: ${claimed3.task?.subject}. reply with 'task3_done_by_w1'` });

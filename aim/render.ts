@@ -5,11 +5,11 @@
  * Provides consistent styling for subagent, send_message, team_create, etc.
  */
 
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { Message } from "@mariozechner/pi-ai";
-import { Container, Markdown, Text, Spacer } from "@mariozechner/pi-tui";
-import type { Theme } from "@mariozechner/pi-coding-agent";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
+import { Container, Markdown, Text, Spacer } from "@earendil-works/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import { getFinalOutput } from "./agent-result.js";
 import type { AgentExecutionResult } from "./agent-executor.js";
@@ -205,7 +205,9 @@ export function renderSubagentResult(
     const usageStr = formatUsageStats(usage, model);
     if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
   }
-  return new Container({ children: [new Text(text, 0, 0)] });
+  const container = new Container();
+  container.addChild(new Text(text, 0, 0));
+  return container;
 }
 
 // ============================================================================

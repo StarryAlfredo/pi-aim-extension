@@ -11,9 +11,9 @@
  *   - Timeout protection: max 5 minutes for blocking waits
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { getTask, isTerminalStatus } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { getProgressTracker, generateProgressSummary, generateCompactSummary } from "./task-progress.js";
@@ -70,10 +70,7 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const team = getActiveTeam();
       if (!team) {
-        return {
-          content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
-          isError: true,
-        };
+        throw new Error("No active team. Create a team first with team_create.");
       }
       const teamName = team.name;
 
@@ -82,10 +79,7 @@ export function registerTaskOutputTool(pi: ExtensionAPI): void {
       // --- Initial check ---
       let task = getTask(ctx.cwd, teamName, taskId);
       if (!task) {
-        return {
-          content: [{ type: "text", text: `❌ Task #${taskId} not found.` }],
-          isError: true,
-        };
+        throw new Error(`❌ Task #${taskId} not found.`);
       }
 
       const startTime = Date.now();

@@ -4,8 +4,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Mailbox } from "./mailbox.ts";
-import { getTeamsDir, getInboxesDir } from "./types.ts";
+import { Mailbox } from "./mailbox.js";
+import { getTeamsDir, getInboxesDir } from "./types.js";
 
 async function testMailboxDirectoryCreation() {
   console.log("=== Testing Mailbox Directory Creation ===");
@@ -75,7 +75,7 @@ async function testWorkerPoolImport() {
   
   try {
     // Test both import styles that were causing issues
-    const { workerPool } = await import("./worker-pool.ts");
+    const { workerPool } = await import("./worker-pool.js");
     
     if (workerPool && typeof workerPool.total === "number") {
       console.log("✓ WorkerPool ESM import successful");
@@ -93,7 +93,7 @@ async function testTeamsInitialization() {
   console.log("\n=== Testing Teams Initialization ===");
   
   try {
-    const { getActiveTeam } = await import("./teams.ts");
+    const { getActiveTeam } = await import("./teams.js");
     
     const activeTeam = getActiveTeam();
     

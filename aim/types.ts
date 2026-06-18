@@ -3,7 +3,7 @@
  * Core type definitions used across all AIM modules.
  */
 
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 
 // ============================================================================
 // Worker / Process Management

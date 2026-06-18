@@ -12,9 +12,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { TeammateMessage } from "./types.ts";
-import { getInboxesDir } from "./types.ts";
-import { acquireFileLock } from "./lock.ts";
+import type { TeammateMessage } from "./types.js";
+import { getInboxesDir } from "./types.js";
+import { acquireFileLock } from "./lock.js";
 
 // ============================================================================
 // Mailbox Class
@@ -42,9 +42,7 @@ export class Mailbox {
   private getInboxPath(agentName: string): string {
     const safeName = agentName.replace(/[<>:"/\\|?*]/g, "_");
     const dir = getInboxesDir(this.#cwd, this.#teamName);
-    console.log(`getInboxPath: cwd=${this.#cwd}, team=${this.#teamName}, dir=${dir} (type: ${typeof dir})`);
     const fullPath = path.join(dir, `${safeName}.json`);
-    console.log(`  fullPath=${fullPath} (type: ${typeof fullPath})`);
     return fullPath;
   }
 

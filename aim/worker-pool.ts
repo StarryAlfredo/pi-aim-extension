@@ -22,15 +22,15 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message } from "@mariozechner/pi-ai";
-import type { WorkerConfig, WorkerInfo, WorkerState } from "./types.ts";
+import type { Message } from "@earendil-works/pi-ai";
+import type { WorkerConfig, WorkerInfo, WorkerState } from "./types.js";
 import {
   recordToolUse,
   recordTokenUsage,
   recordTurn,
   recordStatusChange,
   recordError,
-} from "./task-progress.ts";
+} from "./task-progress.js";
 
 // ============================================================================
 // Helpers

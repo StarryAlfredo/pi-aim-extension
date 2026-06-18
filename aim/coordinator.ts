@@ -13,7 +13,7 @@
  * - Uses strong MUST/ALWAYS language to enforce delegation behavior.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, CustomEntry } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,10 +98,10 @@ export function toggleCoordinator(): boolean {
 export function restoreCoordinatorState(ctx: ExtensionContext) {
   const entries = ctx.sessionManager.getEntries();
   const lastCoordinatorEntry = entries
-    .filter((e) => e.type === "custom" && (e as Record<string, unknown>).customType === COORDINATOR_ENTRY_TYPE)
-    .pop() as Record<string, unknown> | undefined;
+    .filter((e): e is CustomEntry<unknown> => e.type === "custom" && e.customType === COORDINATOR_ENTRY_TYPE)
+    .pop();
   if (lastCoordinatorEntry) {
-    coordinatorActive = (lastCoordinatorEntry.data as { active: boolean })?.active ?? false;
+    coordinatorActive = (lastCoordinatorEntry.data as { active: boolean } | undefined)?.active ?? false;
   }
 }
 

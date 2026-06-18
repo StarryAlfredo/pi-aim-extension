@@ -83,9 +83,9 @@ function test2_parseMultipleMentions() {
 
   const r = parseMessageRouter("@scout @fixer find and fix auth bug in login.ts", agents);
   assert(r !== null, "multiple mentions parsed", "");
-  assert(r?.targets.length === 2, "two targets", "got " + (r?.targets.length ?? 0));
-  assert(r?.targets.includes("scout"), "includes scout", "");
-  assert(r?.targets.includes("fixer"), "includes fixer", "");
+  assert(r != null && r.targets.length === 2, "two targets", "got " + (r?.targets.length ?? 0));
+  assert(r != null && r.targets.includes("scout"), "includes scout", "");
+  assert(r != null && r.targets.includes("fixer"), "includes fixer", "");
   assert(r?.content === "find and fix auth bug in login.ts", "content correct", r?.content ?? "");
 }
 
@@ -95,12 +95,12 @@ function test3_parseBroadcastAll() {
 
   const r1 = parseMessageRouter("@all stop all work", agents);
   assert(r1 !== null, "@all parsed", "");
-  assert(r1?.isBroadcast, "@all is broadcast", "");
-  assert(r1?.targets.length === 3, "@all targets all 3 agents", "got " + (r1?.targets.length ?? 0));
+  assert(r1 != null && r1.isBroadcast, "@all is broadcast", "");
+  assert(r1 != null && r1.targets.length === 3, "@all targets all 3 agents", "got " + (r1?.targets.length ?? 0));
 
   const r2 = parseMessageRouter("@* shutdown immediately", agents);
   assert(r2 !== null, "@* parsed", "");
-  assert(r2?.isBroadcast, "@* is broadcast", "");
+  assert(r2 != null && r2.isBroadcast, "@* is broadcast", "");
 }
 
 function test4_parseNoMention() {

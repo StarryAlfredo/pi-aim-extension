@@ -17,7 +17,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { getTask, updateTask, forceTaskStatus, listTasks, isTerminalStatus } from "./shared-tasks.js";
@@ -31,7 +31,7 @@ import { recordSubagentSpawn, recordSubagentResult, appendToTranscript } from ".
 import { getFinalOutput } from "./agent-result.js";
 import { discoverAgents } from "./agents.js";
 import type { TaskItem, WorkerInfo } from "./types.js";
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 
 // ============================================================================
 // Resume Logic

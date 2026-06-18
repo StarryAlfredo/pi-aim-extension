@@ -6,7 +6,7 @@
  * Extracted from index.ts to separate lifecycle concerns from tool registration.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerFindCandidateAgent, registerIsAgentBusy, updateTask, getTask, cleanupStaleTasks } from "./shared-tasks.js";
 import { findLeastBusyAgent, isAgentBusyStatus } from "./agent-status.js";
 import { registerMarkNudgeSent } from "./task-notifications.js";
@@ -74,24 +74,15 @@ export function createPermissionHandler(pi: ExtensionAPI): PermissionRequestHand
 
       // Block dangerous commands automatically
       if (DANGEROUS_COMMAND_PATTERNS.test(commandStr)) {
-        pi.sendMessage({
-          role: "user",
-          content: `🔐 ⛔ Permission DENIED from ${agentName}: ${toolName}(${summary}) — dangerous command blocked.`,
-        });
+        pi.sendUserMessage(`🔐 ⛔ Permission DENIED from ${agentName}: ${toolName}(${summary}) — dangerous command blocked.`);
         return { approved: false, reason: "Dangerous command blocked by safety filter" };
       }
 
-      pi.sendMessage({
-        role: "user",
-        content: `🔐 Permission request from ${agentName}: ${toolName}(${summary})`,
-      });
+      pi.sendUserMessage(`🔐 Permission request from ${agentName}: ${toolName}(${summary})`);
 
       // Default deny: without a full ToolUseConfirm integration, we cannot
       // safely auto-approve arbitrary commands.
-      pi.sendMessage({
-        role: "user",
-        content: `🔐 Permission DENIED from ${agentName}: ${toolName}(${summary}) — auto-approve disabled for safety. Implement ToolUseConfirm integration for interactive approval.`,
-      });
+      pi.sendUserMessage(`🔐 Permission DENIED from ${agentName}: ${toolName}(${summary}) — auto-approve disabled for safety. Implement ToolUseConfirm integration for interactive approval.`);
       return { approved: false, reason: "Auto-approve disabled for safety. Implement ToolUseConfirm integration for interactive approval." };
     } catch {
       return { approved: false, reason: "Failed to present permission request to user" };
@@ -128,10 +119,7 @@ export function startLifecycleServices(pi: ExtensionAPI): () => void {
       onPermissionRequest: createPermissionHandler(pi),
       onDistribution: (result) => {
         if (result.assigned) {
-          pi.sendMessage({
-            role: "user",
-            content: `📋 Task #${result.taskId} assigned to ${result.agentName}`,
-          });
+          pi.sendUserMessage(`📋 Task #${result.taskId} assigned to ${result.agentName}`);
         }
       },
     }).catch(err => {
@@ -160,10 +148,7 @@ export function startLifecycleServices(pi: ExtensionAPI): () => void {
     if (!isFg) {
       const progress = getProgressTracker(id);
       const status = progress ? generateCompactSummary(id) : "running";
-      pi.sendMessage({
-        role: "user",
-        content: `⏸️ Task ${id} moved to background (${status})`,
-      });
+      pi.sendUserMessage(`⏸️ Task ${id} moved to background (${status})`);
     }
   });
 

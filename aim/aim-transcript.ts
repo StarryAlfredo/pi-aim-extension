@@ -18,8 +18,8 @@
 import * as fs from "node:fs";
 import { getAgentTranscriptPath, getAgentMetadataPath } from "./types.js";
 import type { SubagentSpawnData, SubagentResultData } from "./types.js";
-import type { Message } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // ============================================================================
 // Metadata

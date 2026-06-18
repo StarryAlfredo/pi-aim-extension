@@ -9,11 +9,11 @@
  * TUI rendering.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { StringEnum, type Message } from "@mariozechner/pi-ai";
-import { Container, Text, Markdown, Spacer } from "@mariozechner/pi-tui";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import { StringEnum, type Message } from "@earendil-works/pi-ai";
+import { Container, Text, Markdown, Spacer } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 
 import { workerPool } from "./worker-pool.js";
 import { discoverAgents } from "./agents.js";

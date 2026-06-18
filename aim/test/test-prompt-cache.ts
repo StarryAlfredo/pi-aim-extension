@@ -185,3 +185,5 @@ function main() {
   else { console.log("All tests passed!"); process.exit(0); }
 }
 main();
+
+export {};

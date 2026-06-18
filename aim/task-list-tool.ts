@@ -11,9 +11,9 @@
  *   - Agent status overview (who's busy / idle)
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { listTasks, isTerminalStatus } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { getTeamStatusSnapshot, formatAgentStatuses, type AgentStatus } from "./agent-status.js";
@@ -61,10 +61,7 @@ export function registerTaskListTool(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const team = getActiveTeam();
       if (!team) {
-        return {
-          content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
-          isError: true,
-        };
+        throw new Error("No active team. Create a team first with team_create.");
       }
       const teamName = team.name;
 

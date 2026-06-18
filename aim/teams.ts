@@ -14,18 +14,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-// Mock Type for testing - typebox package not installed
-const Type = {
-  String: (desc?: { description: string }) => ({ type: "string", description: desc?.description ?? "" }),
-  Optional: (t: unknown) => ({ ...t as any, optional: true }),
-  Object: (props: Record<string, unknown>) => ({ type: "object", properties: props })
-};
-import type { TeamFile, TeamMember, SpawnTeammateConfig } from "./types.ts";
-import { getTeamsDir, getTasksDir, getInboxesDir, type AgentConfig } from "./types.ts";
-import { writeToMailbox } from "./mailbox.ts";
-import { workerPool } from "./worker-pool.ts";
-import { runTeammateLoop } from "./teammate-loop.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import type { TeamFile, TeamMember, SpawnTeammateConfig } from "./types.js";
+import { getTeamsDir, getTasksDir, getInboxesDir, type AgentConfig } from "./types.js";
+import { writeToMailbox } from "./mailbox.js";
+import { workerPool } from "./worker-pool.js";
+import { runTeammateLoop } from "./teammate-loop.js";
 
 // ============================================================================
 // Module State
@@ -50,7 +45,7 @@ function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-async function readTeamFile(cwd: string, teamName: string): Promise<TeamFile | null> {
+export async function readTeamFile(cwd: string, teamName: string): Promise<TeamFile | null> {
   const filePath = getTeamFilePath(cwd, teamName);
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
@@ -207,7 +202,7 @@ export function registerTeams(pi: ExtensionAPI) {
       description: Type.Optional(Type.String({ description: "Team purpose/description" })),
     }),
 
-    async execute(_toolCallId, params, _signal, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const team = await createTeam(ctx.cwd, params.team_name, params.description);
       return {
         content: [{
@@ -227,7 +222,7 @@ export function registerTeams(pi: ExtensionAPI) {
       team_name: Type.String({ description: "Name of the team to delete" }),
     }),
 
-    async execute(_toolCallId, params, _signal, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       await deleteTeam(ctx.cwd, params.team_name);
       return {
         content: [{ type: "text", text: `Team "${params.team_name}" deleted.` }],

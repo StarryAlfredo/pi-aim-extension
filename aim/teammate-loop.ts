@@ -16,12 +16,12 @@
  *     execution or never emits agent_end.
  */
 
-import { pollInbox, sendIdleNotification, type PollResult } from "./poller.ts";
-import { workerPool } from "./worker-pool.ts";
-import { updateTask, forceTaskStatus } from "./shared-tasks.ts";
-import type { WorkerInfo } from "./types.ts";
+import { pollInbox, sendIdleNotification, type PollResult } from "./poller.js";
+import { workerPool } from "./worker-pool.js";
+import { updateTask, forceTaskStatus } from "./shared-tasks.js";
+import type { WorkerInfo } from "./types.js";
 // P3: Progress tracking for idle notifications
-import { getProgressTracker, generateCompactSummary, persistProgress } from "./task-progress.ts";
+import { getProgressTracker, generateCompactSummary, persistProgress } from "./task-progress.js";
 
 // ============================================================================
 // Constants

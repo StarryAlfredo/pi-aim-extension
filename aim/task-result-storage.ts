@@ -241,8 +241,9 @@ export function handleBatchOverflow(
       overflow.budgetTruncated = true;
     }
 
-    // Recalculate total size after truncation
+    // Recalculate total size (and budget flag) after truncation
     totalInlineSize = overflowItems.reduce((sum, item) => sum + item.display.length, 0);
+    overBudget = totalInlineSize > messageBudget;
   }
 
   return { items: overflowItems, totalInlineSize, overBudget };

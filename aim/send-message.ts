@@ -10,9 +10,11 @@
  * - Structured protocol messages (shutdown, permission responses)
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { Text } from "@earendil-works/pi-tui";
 import { readMailbox, writeToMailbox } from "./mailbox.js";
+import { getActiveTeam, readTeamFile } from "./teams.js";
 
 // ============================================================================
 // Schema
@@ -45,19 +47,41 @@ export function registerSendMessage(pi: ExtensionAPI) {
     ],
     parameters: SendMessageParams,
 
-    async execute(_toolCallId, params, signal, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
+      const activeTeam = getActiveTeam();
+      const teamName = activeTeam?.name ?? "";
 
       if (params.to === "*") {
-        // Broadcast: send to all team members
-        // We need team context, but for now just send to the current team
-        // TODO: implement team-aware broadcast in teams.ts
+        // Broadcast: send to every member of the active team.
+        if (!activeTeam) {
+          throw new Error("No active team. Broadcast requires an active team — create one with team_create first.");
+        }
+        const teamFile = await readTeamFile(cwd, activeTeam.name);
+        const members = teamFile?.members ?? [];
+        if (members.length === 0) {
+          return {
+            content: [{ type: "text", text: `📡 Broadcast: team "${activeTeam.name}" has no members.` }],
+            details: { success: true, mode: "broadcast", count: 0, team: activeTeam.name },
+          };
+        }
+        let delivered = 0;
+        for (const member of members) {
+          try {
+            await writeToMailbox(cwd, member.name, {
+              from: "user",
+              text: params.message,
+              timestamp: new Date().toISOString(),
+              summary: params.summary,
+            }, activeTeam.name);
+            delivered++;
+          } catch {
+            // Skip members whose inbox cannot be written (e.g. invalid name).
+          }
+        }
         return {
-          content: [{
-            type: "text",
-            text: "Broadcast not yet available. Use the teams module for team-aware messaging.",
-          }],
-          details: { success: false, mode: "broadcast" },
+          content: [{ type: "text", text: `📡 Broadcast delivered to ${delivered} of ${members.length} member${members.length === 1 ? "" : "s"} of team "${activeTeam.name}".` }],
+          details: { success: delivered > 0, mode: "broadcast", count: delivered, team: activeTeam.name },
         };
       }
 
@@ -88,7 +112,7 @@ export function registerSendMessage(pi: ExtensionAPI) {
         text: params.message,
         timestamp: new Date().toISOString(),
         summary: params.summary,
-      }, "");  // no team context for direct messages
+      }, teamName);
 
       return {
         content: [{
@@ -106,14 +130,14 @@ export function registerSendMessage(pi: ExtensionAPI) {
         ? theme.fg("accent", "broadcast")
         : theme.fg("accent", `→ ${args.to}`);
       text += theme.fg("dim", ` ${preview}`);
-      return new (require("@mariozechner/pi-tui").Text)(text, 0, 0);
+      return new Text(text, 0, 0);
     },
 
     renderResult(result, _options, theme, _context) {
       const details = result.details as { success: boolean; recipient?: string; mode?: string } | undefined;
       const icon = details?.success ? theme.fg("success", "✓") : theme.fg("error", "✗");
       let text = `${icon} ${theme.fg("dim", details?.recipient ? `Message sent to ${details.recipient}` : "Broadcast")}`;
-      return new (require("@mariozechner/pi-tui").Text)(text, 0, 0);
+      return new Text(text, 0, 0);
     },
   });
 }

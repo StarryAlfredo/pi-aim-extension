@@ -33,17 +33,17 @@ import {
   type TaskItem,
   type TaskStatus,
   type TaskType,
-} from "./types.ts";
+} from "./types.js";
 
 import {
   executeTaskCreatedHooks,
   executeTaskCompletedHooks,
   executeTaskTransitionHooks,
   type HookContext,
-} from "./task-hooks.ts";
-import { notifyTaskUnblocked, nudgeVerification, notifyTaskAssignment, notifyTaskCompleted, type TaskNotification } from "./task-notifications.ts";
-import { writeToMailbox } from "./mailbox.ts";
-import { acquireFileLock } from "./lock.ts";
+} from "./task-hooks.js";
+import { notifyTaskUnblocked, nudgeVerification, notifyTaskAssignment, notifyTaskCompleted, type TaskNotification } from "./task-notifications.js";
+import { writeToMailbox } from "./mailbox.js";
+import { acquireFileLock } from "./lock.js";
 
 // ============================================================================
 // Options & Callbacks
@@ -714,6 +714,7 @@ export async function deleteTask(
   const postLockActions: (() => Promise<void>)[] = [];
   let wasForceKilled = false;
   let deletedTaskOwner: string | undefined;
+  let deletedTaskBlocks: string[] = [];
 
   const release = await acquireFileLock(listLockPath(cwd, team));
   try {
@@ -770,7 +771,7 @@ export async function deleteTask(
     // These must run outside the lock to avoid deadlocks (same pattern as updateTask).
     if (wasForceKilled) {
       const owner = deletedTaskOwner;
-      postLockActions.push(() => propagateFailureToBlocked(cwd, team, taskId));
+      postLockActions.push(() => propagateFailureToBlocked(cwd, team, taskId, deletedTaskBlocks));
       if (owner) {
         postLockActions.push(async () => {
           try {
@@ -941,6 +942,7 @@ async function propagateFailureToBlocked(
   cwd: string,
   team: string,
   failedTaskId: string,
+  preloadedBlocks?: string[],
 ): Promise<void> {
   // Phase 1: BFS to collect all cascade-affected tasks (no lock needed — read-only)
   //
@@ -953,9 +955,15 @@ async function propagateFailureToBlocked(
   //   - In extreme concurrency, a task that was pending in Phase 1 but became
   //     in_progress by Phase 2 will still be cascade-failed — this is correct
   //     because its dependency will never be satisfied.
+  // B7: When called from deleteTask(force), the failed task is already deleted
+  // from disk, so listTasks() cannot return it. In that case the caller passes
+  // preloadedBlocks (captured before deletion) and we synthesize a minimal
+  // failedTask object so the BFS can still seed from its direct blocks.
   const allTasks = listTasks(cwd, team);
   const taskMap = new Map(allTasks.map(t => [t.id, t]));
-  const failedTask = taskMap.get(failedTaskId);
+  const failedTask = taskMap.get(failedTaskId) ?? (preloadedBlocks
+    ? { id: failedTaskId, blocks: preloadedBlocks, status: "failed" as TaskStatus }
+    : undefined);
   if (!failedTask || failedTask.blocks.length === 0) return;
 
   const toFail: { id: string; reason: string }[] = [];
@@ -1133,7 +1141,7 @@ export {
   type TaskCreatedHook,
   type TaskCompletedHook,
   type TaskTransitionHook,
-} from "./task-hooks.ts";
+} from "./task-hooks.js";
 
 // ============================================================================
 // P0/P1: Re-export options & infrastructure types

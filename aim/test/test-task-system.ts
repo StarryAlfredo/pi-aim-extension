@@ -550,7 +550,11 @@ async function testP2_notify_task_assignment(): Promise<void> {
     const msg = msgs[0]!;
     const parsed = JSON.parse(msg.text) as TaskNotification;
     assert(parsed.type === "task_assigned", "P2/notif_assign", "notification type is task_assigned");
-    assert(parsed.taskId === "1", "P2/notif_assign", "taskId correct");
+    if (parsed.type === "task_assigned") {
+      assert(parsed.taskId === "1", "P2/notif_assign", "taskId correct");
+    } else {
+      assert(false, "P2/notif_assign", "notification type is task_assigned");
+    }
   } finally {
     cleanupTestDir(cwd);
   }
@@ -818,7 +822,7 @@ async function testP4_failed_task_evict_delay(): Promise<void> {
 // ============================================================================
 
 async function testP5_P8_compile_and_constants(): Promise<void> {
-  const RUNTIME_DEPS = ["typebox", "@mariozechner/pi-coding-agent", "@mariozechner/pi-tui"];
+  const RUNTIME_DEPS = ["typebox", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"];
   function isRuntimeDep(err: any): boolean {
     const msg = err?.message || "";
     return err?.code === "MODULE_NOT_FOUND" && RUNTIME_DEPS.some(d => msg.includes(d));
@@ -898,7 +902,7 @@ async function testP5_P8_compile_and_constants(): Promise<void> {
 // ============================================================================
 
 async function test_compile_all_modules(): Promise<void> {
-  const RUNTIME_DEPS = ["typebox", "@mariozechner/pi-coding-agent", "@mariozechner/pi-tui", "@mariozechner/pi-ai", "@mariozechner/pi-agent-core"];
+  const RUNTIME_DEPS = ["typebox", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@earendil-works/pi-ai", "@earendil-works/pi-agent-core"];
   function isRuntimeDep(err: any): boolean {
     const msg = err?.message || "";
     return err?.code === "MODULE_NOT_FOUND" && RUNTIME_DEPS.some(d => msg.includes(d));

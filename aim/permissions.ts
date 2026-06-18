@@ -7,7 +7,7 @@
  * (print/RPC without UI), dangerous commands are auto-denied.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { requestPermissionViaMailbox, needsMailboxPermission } from "./permission-sync.js";
 
 // ============================================================================

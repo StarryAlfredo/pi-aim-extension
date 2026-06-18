@@ -132,6 +132,45 @@ aim/
 
 ## Change Log
 
+### 2026-06-18
+- **Migration: `@mariozechner/*` → `@earendil-works/*`** — All imports updated to the
+current pi package names (v0.79.6). The legacy aliases still worked via pi's loader
+shim, but are deprecated and would break on a future pi release.
+- **Engineering: type-safe build** — Added `tsconfig.json`, `@types/node`, and a
+`typecheck` script (`npm run typecheck`). Standalone `tsc` now passes with **0
+errors** (was 212+). Added `.gitattributes` to enforce LF line endings.
+- **API drift: v0.73 → v0.79 tool contract** — Tool `execute` callbacks now
+declare the 5th `ctx` parameter (was being skipped, so `ctx` bound to `onUpdate`).
+- **API drift: errors throw, not `isError`** — `AgentToolResult` no longer has an
+`isError` field. Tool error paths now `throw new Error(...)` (pi v0.79 convention);
+`renderResult` reads `context.isError` instead of `result.isError`.
+- **API drift: `sendMessage` → `sendUserMessage`** — `ExtensionAPI.sendMessage`
+now requires `customType`/`display`. Permission/background notifications switched
+to `sendUserMessage(content)` (the v0.79 equivalent of `{role:"user",content}`).
+- **API drift: `CustomEntry` typed** — `restoreCoordinatorState` uses a proper
+type guard instead of unsafe `as Record<string,unknown>` casts.
+- **API drift: `Container()` ctor** — `Container` no longer takes `{children}`;
+use `addChild()`. `Text` imported at top level instead of per-call `require()`.
+- **Fix: broadcast (`to:"*"`) now works** — was a dead stub returning "not yet
+available". Now enumerates active team members and writes to each inbox.
+- **Fix: point-to-point messages use the active team** — was passing `teamName=""`,
+writing to an unreachable `teams//inboxes/` path. Now reads `getActiveTeam()`.
+- **Fix: `teams.ts` uses real `typebox`** — replaced the hand-rolled mock `Type`
+object (which provided zero runtime validation) with the real `Type` from the
+`typebox` module bundled by pi.
+- **Fix: mailbox debug `console.log` removed** — `getInboxPath()` was logging
+cwd/team/path on every inbox write.
+- **Fix: `markCompleted` evict-timer leak** — a second `markCompleted()` call
+would leak the old `setTimeout` handle; now clears it first.
+- **Fix: `overBudget` stale after truncation** — `handleBatchOverflow` recomputed
+`totalInlineSize` but returned the pre-truncation `overBudget` flag.
+- **Fix: `deleteTask(force)` cascade failure propagation** — the failed task was
+unlinked before `propagateFailureToBlocked` ran, so it found no task and
+short-circuited, leaving blocked tasks stuck in `pending` forever. Now captures
+`blocks` pre-deletion and seeds the BFS from the in-memory copy.
+- **Fix: lifecycle cleanup timer `.unref()`** — the no-retain remove timer no
+longer keeps the Node event loop (and thus pi's exit) alive.
+
 ### 2026-04-30
 - **Feature: coordinator mode overhaul** — Rewritten coordinator prompt for effectiveness:
   - Prompt now injected at the BEGINNING of system prompt (not end) to avoid "lost-in-middle"

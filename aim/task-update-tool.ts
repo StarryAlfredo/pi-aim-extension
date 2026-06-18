@@ -11,9 +11,9 @@
  *   - Terminal transitions trigger unblock/failure propagation
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { updateTask } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { type TaskItem, type TaskStatus } from "./types.js";
@@ -63,10 +63,7 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const team = getActiveTeam();
       if (!team) {
-        return {
-          content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
-          isError: true,
-        };
+        throw new Error("No active team. Create a team first with team_create.");
       }
       const teamName = team.name;
 
@@ -79,20 +76,14 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
       if (params.metadata !== undefined) updates.metadata = params.metadata as Record<string, unknown>;
 
       if (Object.keys(updates).length === 0) {
-        return {
-          content: [{ type: "text", text: "No updates provided. Specify at least one field to change." }],
-          isError: true,
-        };
+        throw new Error("No updates provided. Specify at least one field to change.");
       }
 
       try {
         const task = await updateTask(ctx.cwd, teamName, params.task_id, updates);
 
         if (!task) {
-          return {
-            content: [{ type: "text", text: `❌ Task #${params.task_id} not found.` }],
-            isError: true,
-          };
+          throw new Error(`❌ Task #${params.task_id} not found.`);
         }
 
         const statusIcon: Record<string, string> = {
@@ -113,10 +104,7 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text", text: `❌ Failed to update task #${params.task_id}: ${message}` }],
-          isError: true,
-        };
+        throw new Error(`❌ Failed to update task #${params.task_id}: ${message}`);
       }
     },
 
@@ -132,9 +120,9 @@ export function registerTaskUpdateTool(pi: ExtensionAPI): void {
       );
     },
 
-    renderResult(result, _opts, theme) {
+    renderResult(result, _opts, theme, context) {
       const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
-      const isError = result.isError;
+      const isError = context.isError;
       return new Text(
         isError ? theme.fg("error", text) : theme.fg("success", text),
         0, 0,

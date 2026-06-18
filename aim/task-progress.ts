@@ -19,8 +19,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getTasksDir } from "./types.ts";
-import type { Message } from "@mariozechner/pi-ai";
+import { getTasksDir } from "./types.js";
+import type { Message } from "@earendil-works/pi-ai";
 
 // ============================================================================
 // Types
@@ -514,7 +514,7 @@ export function collectUsageFromMessages(messages: Message[]): {
   for (const msg of messages) {
     if (msg.role === "assistant") {
       turns++;
-      const usage = (msg as Record<string, unknown>).usage as Record<string, number> | undefined;
+      const usage = (msg as unknown as Record<string, unknown>).usage as Record<string, number> | undefined;
       if (usage) {
         input += usage.input || 0;
         output += usage.output || 0;

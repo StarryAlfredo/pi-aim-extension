@@ -11,9 +11,9 @@
  *   - Hook vetos and missing-team errors are surfaced to the LLM
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { createTask, type CreateTaskOptions } from "./shared-tasks.js";
 import { getActiveTeam } from "./teams.js";
 import { type TaskType } from "./types.js";
@@ -62,10 +62,7 @@ export function registerTaskCreateTool(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const team = getActiveTeam();
       if (!team) {
-        return {
-          content: [{ type: "text", text: "No active team. Create a team first with team_create." }],
-          isError: true,
-        };
+        throw new Error("No active team. Create a team first with team_create.");
       }
 
       try {
@@ -102,10 +99,7 @@ export function registerTaskCreateTool(pi: ExtensionAPI): void {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text", text: `❌ Failed to create task: ${message}` }],
-          isError: true,
-        };
+        throw new Error(`❌ Failed to create task: ${message}`);
       }
     },
 
@@ -118,9 +112,9 @@ export function registerTaskCreateTool(pi: ExtensionAPI): void {
       );
     },
 
-    renderResult(result, _opts, theme) {
+    renderResult(result, _opts, theme, context) {
       const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
-      const isError = result.isError;
+      const isError = context.isError;
       return new Text(
         isError ? theme.fg("error", text) : theme.fg("success", text),
         0, 0,

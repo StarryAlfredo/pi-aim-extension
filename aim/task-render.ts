@@ -18,8 +18,8 @@
  *   - task-notifications.ts: uses renderTaskEvent for notification messages
  */
 
-import { Container, Text, Spacer } from "@mariozechner/pi-tui";
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import { Container, Text, Spacer } from "@earendil-works/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 // (Markdown import removed — unused)
 import { formatTokenCount } from "./task-progress.js";
 import {

@@ -18,10 +18,10 @@ const files = fs.readdirSync(aimRoot).filter((f: string) => f.endsWith(".ts") &&
 /** External dependencies provided by the pi runtime — not available in standalone test */
 const RUNTIME_DEPS = [
   "typebox",
-  "@mariozechner/pi-coding-agent",
-  "@mariozechner/pi-tui",
-  "@mariozechner/pi-ai",
-  "@mariozechner/pi-agent-core",
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-tui",
+  "@earendil-works/pi-ai",
+  "@earendil-works/pi-agent-core",
 ];
 
 function isRuntimeDepError(err: any): boolean {

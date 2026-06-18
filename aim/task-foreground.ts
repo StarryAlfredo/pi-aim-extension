@@ -293,6 +293,7 @@ export class DisplayManager {
       const effectiveEvictMs = state._isFailed
         ? state.evictAfterMs * 2
         : state.evictAfterMs;
+      if (state._evictTimer !== undefined) clearTimeout(state._evictTimer);
       state._evictTimer = setTimeout(() => {
         this.evict(id);
       }, effectiveEvictMs);
@@ -302,7 +303,7 @@ export class DisplayManager {
       const removeDelay = state._isFailed ? 10_000 : 2_000;
       setTimeout(() => {
         this.remove(id);
-      }, removeDelay);
+      }, removeDelay).unref();
     }
   }
 

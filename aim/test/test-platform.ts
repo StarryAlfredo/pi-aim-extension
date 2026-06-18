@@ -138,9 +138,9 @@ function test2_spawnPiSubprocessWorks() {
 
   // Must NOT have EINVAL error
   assert(
-    !result.error?.code?.includes("EINVAL"),
+    !(result.error as { code?: string })?.code?.includes("EINVAL"),
     "no EINVAL error on spawn",
-    `error: ${result.error?.code || "none"}`
+    `error: ${(result.error as { code?: string })?.code || "none"}`
   );
 
   // Must have stdout with agent_end
@@ -302,7 +302,7 @@ function test5_concurrentSpawningDoesNotCrash() {
   let successCount = 0;
   for (const r of results) {
     if (r.error) {
-      log("error", `spawn failed: ${r.error.code} ${r.error.message?.slice(0, 80) || ""}`);
+      log("error", `spawn failed: ${(r.error as { code?: string }).code} ${r.error.message?.slice(0, 80) || ""}`);
     }
     const lines = (r.stdout || "").split("\n").filter(l => l.trim());
     if (lines.filter(l => l.includes("agent_end")).length > 0) {
@@ -349,7 +349,7 @@ function test6_oldSpawnLogicWouldFail() {
     timeout: 5000,
   });
 
-  if (result.error?.code === "EINVAL") {
+  if ((result.error as { code?: string })?.code === "EINVAL") {
     log("EINVAL", "confirmed: direct pi.cmd spawn returns EINVAL on this Node.js version");
     // This should be true if we're on Node.js v24+
     const nodeMajor = parseInt(process.version.slice(1).split(".")[0], 10);

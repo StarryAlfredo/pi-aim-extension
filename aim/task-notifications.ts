@@ -10,11 +10,11 @@
  * Now both import from this neutral module.
  */
 
-import { writeToMailbox } from "./mailbox.ts";
-import { isTerminalStatus, type TaskItem } from "./types.ts";
+import { writeToMailbox } from "./mailbox.js";
+import { isTerminalStatus, type TaskItem } from "./types.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getTasksDir } from "./types.ts";
+import { getTasksDir } from "./types.js";
 
 // ============================================================================
 // Team-Level Nudge State (survives task deletion)
