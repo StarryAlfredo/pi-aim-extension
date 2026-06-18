@@ -48,9 +48,23 @@ export type TaskTransitionHook = (task: TaskItem, fromStatus: TaskStatus, toStat
 // Registry
 // ============================================================================
 
-const createdHooks: TaskCreatedHook[] = [];
-const completedHooks: TaskCompletedHook[] = [];
-const transitionHooks: TaskTransitionHook[] = [];
+const createdHooks = new Map<number, TaskCreatedHook>();
+const completedHooks = new Map<number, TaskCompletedHook>();
+const transitionHooks = new Map<number, TaskTransitionHook>();
+let nextHookId = 1;
+
+/** Unregister a created hook by the id returned from registerTaskCreatedHook. */
+export function unregisterTaskCreatedHook(id: number): boolean {
+  return createdHooks.delete(id);
+}
+/** Unregister a completed hook by the id returned from registerTaskCompletedHook. */
+export function unregisterTaskCompletedHook(id: number): boolean {
+  return completedHooks.delete(id);
+}
+/** Unregister a transition hook by the id returned from registerTaskTransitionHook. */
+export function unregisterTaskTransitionHook(id: number): boolean {
+  return transitionHooks.delete(id);
+}
 
 // ============================================================================
 // Registration
@@ -60,18 +74,26 @@ const transitionHooks: TaskTransitionHook[] = [];
  * Register a hook that runs when a new task is created.
  * Called after the task file is written but before returning to the caller.
  * If any hook returns { allowed: false }, the task is deleted and createTask throws.
+ *
+ * @returns an id (pass to unregisterTaskCreatedHook to remove this hook)
  */
-export function registerTaskCreatedHook(hook: TaskCreatedHook): void {
-  createdHooks.push(hook);
+export function registerTaskCreatedHook(hook: TaskCreatedHook): number {
+  const id = nextHookId++;
+  createdHooks.set(id, hook);
+  return id;
 }
 
 /**
  * Register a hook that runs when a task transitions to a terminal state
  * (completed, failed, or killed).
  * If any hook returns { allowed: false }, the transition is rejected.
+ *
+ * @returns an id (pass to unregisterTaskCompletedHook to remove this hook)
  */
-export function registerTaskCompletedHook(hook: TaskCompletedHook): void {
-  completedHooks.push(hook);
+export function registerTaskCompletedHook(hook: TaskCompletedHook): number {
+  const id = nextHookId++;
+  completedHooks.set(id, hook);
+  return id;
 }
 
 /**
@@ -82,9 +104,13 @@ export function registerTaskCompletedHook(hook: TaskCompletedHook): void {
  *
  * This is more general than TaskCompletedHook — use it for cross-cutting
  * concerns like logging, auditing, or custom transition rules.
+ *
+ * @returns an id (pass to unregisterTaskTransitionHook to remove this hook)
  */
-export function registerTaskTransitionHook(hook: TaskTransitionHook): void {
-  transitionHooks.push(hook);
+export function registerTaskTransitionHook(hook: TaskTransitionHook): number {
+  const id = nextHookId++;
+  transitionHooks.set(id, hook);
+  return id;
 }
 
 // ============================================================================
@@ -99,7 +125,7 @@ export async function executeTaskCreatedHooks(
   task: TaskItem,
   ctx: HookContext,
 ): Promise<HookResult> {
-  for (const hook of createdHooks) {
+  for (const hook of createdHooks.values()) {
     try {
       const result = await hook(task, ctx);
       if (!result.allowed) return result;
@@ -120,7 +146,7 @@ export async function executeTaskCompletedHooks(
   newStatus: TaskStatus,
   ctx: HookContext,
 ): Promise<HookResult> {
-  for (const hook of completedHooks) {
+  for (const hook of completedHooks.values()) {
     try {
       const result = await hook(task, newStatus, ctx);
       if (!result.allowed) return result;
@@ -141,7 +167,7 @@ export async function executeTaskTransitionHooks(
   toStatus: TaskStatus,
   ctx: HookContext,
 ): Promise<HookResult> {
-  for (const hook of transitionHooks) {
+  for (const hook of transitionHooks.values()) {
     try {
       const result = await hook(task, fromStatus, toStatus, ctx);
       if (!result.allowed) return result;
@@ -157,7 +183,7 @@ export async function executeTaskTransitionHooks(
 // ============================================================================
 
 export function clearAllHooks(): void {
-  createdHooks.length = 0;
-  completedHooks.length = 0;
-  transitionHooks.length = 0;
+  createdHooks.clear();
+  completedHooks.clear();
+  transitionHooks.clear();
 }

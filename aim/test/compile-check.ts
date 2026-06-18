@@ -26,7 +26,8 @@ const RUNTIME_DEPS = [
 
 function isRuntimeDepError(err: any): boolean {
   const msg = err.message || String(err);
-  if (err.code === "MODULE_NOT_FOUND") {
+  // ESM throws ERR_MODULE_NOT_FOUND; CJS throws MODULE_NOT_FOUND. Accept both.
+  if (err.code === "MODULE_NOT_FOUND" || err.code === "ERR_MODULE_NOT_FOUND") {
     return RUNTIME_DEPS.some(dep => msg.includes(`'${dep}'`) || msg.includes(`"${dep}"`));
   }
   return false;

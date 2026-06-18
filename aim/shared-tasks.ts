@@ -27,6 +27,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   getTasksDir,
+  sanitizeId,
   isTerminalStatus,
   canTransition,
   VALID_TRANSITIONS,
@@ -69,6 +70,23 @@ let _isAgentBusyFn: IsAgentBusyFn | null = null;
  *  This breaks the circular dependency: shared-tasks.ts ↔ agent-status.ts. */
 export function registerIsAgentBusy(fn: IsAgentBusyFn): void {
   _isAgentBusyFn = fn;
+}
+
+/** Callback type for checking if an agent process is still alive.
+ *  Registered by the extension entry point (index.ts) to break the circular
+ *  dependency: shared-tasks.ts ↔ worker-pool.ts.
+ *  Used by cleanupStaleTasks to avoid killing healthy long-running tasks:
+ *  if the owning agent's process is still alive, the task is NOT stale even
+ *  if its updatedAt is old. */
+export type IsAgentAliveFn = (agentId: string) => boolean;
+
+let _isAgentAliveFn: IsAgentAliveFn | null = null;
+
+/** Register a callback to check if an agent process is still alive.
+ *  Called by cleanupStaleTasks to skip tasks whose owner process is still
+ *  running (avoiding false-positive orphan detection on long-running tasks). */
+export function registerIsAgentAlive(fn: IsAgentAliveFn): void {
+  _isAgentAliveFn = fn;
 }
 
 /** Callback type for finding a candidate agent for unowned unblocked tasks.
@@ -122,7 +140,7 @@ function ensureDir(dir: string): void {
 }
 
 function taskFilePath(cwd: string, team: string, taskId: string): string {
-  return path.join(getTasksDir(cwd, team), `task-${taskId}.json`);
+  return path.join(getTasksDir(cwd, team), `task-${sanitizeId(taskId, "task id")}.json`);
 }
 
 /** Get the list lock path for a team's task directory */
@@ -1107,6 +1125,13 @@ export async function cleanupStaleTasks(
     if (task.status !== "in_progress") continue;
     const age = now - task.updatedAt;
     if (age > maxAgeMs) {
+      // G2: avoid false-positive orphan detection. If the owning agent's
+      // process is still alive, the task is healthy (just long-running) —
+      // skip it. Only kill tasks whose owner process is dead (or unknown).
+      const ownerAgentId = (task.metadata?.agentId as string | undefined) ?? task.owner;
+      if (ownerAgentId && _isAgentAliveFn?.(ownerAgentId)) {
+        continue;
+      }
       try {
         // Use forceTaskStatus (skipHooks=true) for infrastructure-level cleanup.
         // Stale task cleanup is a system operation — hooks should not be able to
@@ -1136,6 +1161,9 @@ export {
   registerTaskCreatedHook,
   registerTaskCompletedHook,
   registerTaskTransitionHook,
+  unregisterTaskCreatedHook,
+  unregisterTaskCompletedHook,
+  unregisterTaskTransitionHook,
   type HookResult,
   type HookContext,
   type TaskCreatedHook,

@@ -243,6 +243,28 @@ export function getAimDir(cwd: string): string {
   return nodePath.join(cwd, ".pi", "aim");
 }
 
+/** Validate a path segment (team name, task id, agent id, recipient name).
+ *
+ * These identifiers are interpolated directly into filesystem paths (e.g.
+ * `task-${taskId}.json`, `teams/${teamName}/inboxes/`). A value containing
+ * `..` or `/` would escape its intended directory (path traversal) and a
+ * value with other special chars could clobber arbitrary files.
+ *
+ * Allowed: ASCII letters, digits, hyphen, underscore (no path separators,
+ * dots, or shell metacharacters). Throws on invalid input so callers surface
+ * the problem immediately rather than silently writing outside the AIM dir.
+ *
+ * Task IDs are numeric strings assigned by createTask(), so they always
+ * pass; this guards against LLM-supplied `task_id` / `team_name` / `agent`
+ * values that could otherwise traverse. */
+const VALID_ID_RE = /^[a-zA-Z0-9_-]+$/;
+export function sanitizeId(id: string, kind: string): string {
+  if (typeof id !== "string" || id.length === 0 || !VALID_ID_RE.test(id)) {
+    throw new Error(`Invalid ${kind}: ${JSON.stringify(id)} (must match [a-zA-Z0-9_-]+)`);
+  }
+  return id;
+}
+
 /** Team files directory */
 export function getTeamsDir(cwd: string): string {
   return nodePath.join(getAimDir(cwd), "teams");
@@ -250,12 +272,12 @@ export function getTeamsDir(cwd: string): string {
 
 /** Inbox directory for a specific team */
 export function getInboxesDir(cwd: string, teamName: string): string {
-  return nodePath.join(getTeamsDir(cwd), teamName, "inboxes");
+  return nodePath.join(getTeamsDir(cwd), sanitizeId(teamName, "team name"), "inboxes");
 }
 
 /** Task list directory for a specific team */
 export function getTasksDir(cwd: string, teamName: string): string {
-  return nodePath.join(getAimDir(cwd), "tasks", teamName);
+  return nodePath.join(getAimDir(cwd), "tasks", sanitizeId(teamName, "team name"));
 }
 
 /** Scheduled tasks file path */
@@ -270,12 +292,12 @@ export function getAgentTranscriptDir(cwd: string): string {
 
 /** Agent transcript file path for a specific agent ID */
 export function getAgentTranscriptPath(cwd: string, agentId: string): string {
-  return nodePath.join(getAgentTranscriptDir(cwd), `${agentId}.jsonl`);
+  return nodePath.join(getAgentTranscriptDir(cwd), `${sanitizeId(agentId, "agent id")}.jsonl`);
 }
 
 /** Agent metadata file path */
 export function getAgentMetadataPath(cwd: string, agentId: string): string {
-  return nodePath.join(getAgentTranscriptDir(cwd), `${agentId}.meta.json`);
+  return nodePath.join(getAgentTranscriptDir(cwd), `${sanitizeId(agentId, "agent id")}.meta.json`);
 }
 
 // ============================================================================

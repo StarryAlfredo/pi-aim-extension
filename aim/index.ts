@@ -104,9 +104,11 @@ export {
   isTerminalStatus, canTransition, VALID_TRANSITIONS,
   type TaskItem, type TaskStatus, type TaskType, type CreateTaskOptions,
   registerTaskCreatedHook, registerTaskCompletedHook, registerTaskTransitionHook,
+  unregisterTaskCreatedHook, unregisterTaskCompletedHook, unregisterTaskTransitionHook,
   type HookResult, type HookContext, type TaskCreatedHook, type TaskCompletedHook, type TaskTransitionHook,
   registerFindCandidateAgent, forceTaskStatus,
   registerIsAgentBusy,
+  registerIsAgentAlive,
   type UpdateTaskOptions, type FindCandidateAgentFn, type IsAgentBusyFn,
 } from "./shared-tasks.js";
 export {

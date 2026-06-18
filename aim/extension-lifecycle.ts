@@ -7,9 +7,10 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerFindCandidateAgent, registerIsAgentBusy, updateTask, getTask, cleanupStaleTasks } from "./shared-tasks.js";
+import { registerFindCandidateAgent, registerIsAgentBusy, registerIsAgentAlive, updateTask, getTask, cleanupStaleTasks } from "./shared-tasks.js";
 import { findLeastBusyAgent, isAgentBusyStatus } from "./agent-status.js";
 import { registerMarkNudgeSent } from "./task-notifications.js";
+import { workerPool } from "./worker-pool.js";
 import { startLeadPoller, type PermissionRequestHandler } from "./lead-poller.js";
 import { getActiveTeam } from "./teams.js";
 import { onTransition as onDisplayTransition, onEvict, removeDisplayState, cleanupCompletedDisplayStates } from "./task-foreground.js";
@@ -41,6 +42,16 @@ export function wireCallbacks(_pi: ExtensionAPI): void {
   // Break circular dep: shared-tasks.ts ↔ agent-status.ts
   registerFindCandidateAgent((cwd, team) => findLeastBusyAgent(cwd, team)?.agentId);
   registerIsAgentBusy((cwd, team, agentName) => isAgentBusyStatus(cwd, team, agentName));
+
+  // Break circular dep: shared-tasks.ts ↔ worker-pool.ts.
+  // cleanupStaleTasks uses this to avoid killing healthy long-running tasks:
+  // if the owning agent process is still alive, the task is not stale.
+  registerIsAgentAlive((agentId) => {
+    // workerId === config.agentId; a live (non-dead) worker means the task
+    // owner process is still running and the task is healthy, not orphaned.
+    const info = workerPool.getAll().find(w => w.config.agentId === agentId);
+    return !!info && info.state !== "dead";
+  });
 
   // Break circular dep: task-notifications.ts ↔ shared-tasks.ts
   registerMarkNudgeSent(async (cwd, team, taskId) => {

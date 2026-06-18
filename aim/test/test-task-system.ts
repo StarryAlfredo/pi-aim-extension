@@ -822,10 +822,11 @@ async function testP4_failed_task_evict_delay(): Promise<void> {
 // ============================================================================
 
 async function testP5_P8_compile_and_constants(): Promise<void> {
-  const RUNTIME_DEPS = ["typebox", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"];
+  const RUNTIME_DEPS = ["typebox", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@earendil-works/pi-ai", "@earendil-works/pi-agent-core"];
   function isRuntimeDep(err: any): boolean {
     const msg = err?.message || "";
-    return err?.code === "MODULE_NOT_FOUND" && RUNTIME_DEPS.some(d => msg.includes(d));
+    // ESM throws ERR_MODULE_NOT_FOUND; CJS throws MODULE_NOT_FOUND. Accept both.
+    return ["MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND"].includes(err?.code) && RUNTIME_DEPS.some(d => msg.includes(d));
   }
 
   // P5: Task tools compile (may need typebox — provided by pi runtime)
@@ -905,7 +906,8 @@ async function test_compile_all_modules(): Promise<void> {
   const RUNTIME_DEPS = ["typebox", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@earendil-works/pi-ai", "@earendil-works/pi-agent-core"];
   function isRuntimeDep(err: any): boolean {
     const msg = err?.message || "";
-    return err?.code === "MODULE_NOT_FOUND" && RUNTIME_DEPS.some(d => msg.includes(d));
+    // ESM throws ERR_MODULE_NOT_FOUND; CJS throws MODULE_NOT_FOUND. Accept both.
+    return ["MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND"].includes(err?.code) && RUNTIME_DEPS.some(d => msg.includes(d));
   }
 
   const aimDir = path.resolve(__dirname, "..");
