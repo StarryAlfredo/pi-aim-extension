@@ -172,6 +172,9 @@ function getPiCommand(): { command: string; args: string[] } {
 
 export class WorkerPool {
   private workers = new Map<string, WorkerInfo>();
+  /** Pending SIGKILL escalation timers, tracked so destroy() can clear them
+   *  instead of leaving handles dangling on the event loop. */
+  private pendingKillTimers = new Set<ReturnType<typeof setTimeout>>();
 
   get total(): number { return this.workers.size; }
 
@@ -217,11 +220,9 @@ export class WorkerPool {
     // instead of trying to show local confirmation dialogs.
     const envExtra: Record<string, string> = {};
     if (config.name) envExtra.TEAMMATE_NAME = config.name;
-    // Team name is not in WorkerConfig directly — it's passed via the
-    // spawnTeammate flow in teams.ts which sets it on the config.
-    // We use a custom field to pass it through to the child process.
-    const teamName = (config as Record<string, unknown>).team_name as string | undefined;
-    if (teamName) envExtra.TEAMMATE_TEAM = teamName;
+    // Team name is passed via the typed WorkerConfig.team_name field (previously
+    // threaded through an unsafe `(config as Record).team_name` cast).
+    if (config.team_name) envExtra.TEAMMATE_TEAM = config.team_name;
 
     // Determine shell mode: only needed if we fell through to a .cmd/.bat
     // wrapper. The preferred path (npm root -g → cli.js) uses node.exe + cli.js
@@ -270,7 +271,14 @@ export class WorkerPool {
       info.doneResolve = resolve;
       info.doneReject = reject;
     });
-    if (config.background) info.donePromise.catch(() => {});
+    // Background workers run fire-and-forget: attach a logged catch so a late
+    // rejection (e.g. non-zero exit) is reported instead of becoming an
+    // unhandled rejection. Foreground workers surface rejection via waitFor().
+    if (config.background) {
+      info.donePromise.catch(err => {
+        console.warn(`[aim] Background worker ${config.name} (${workerId}) failed:`, err);
+      });
+    }
 
     this.workers.set(workerId, info);
 
@@ -452,21 +460,35 @@ export class WorkerPool {
     });
   }
 
-  /** Kill a worker by ID. Returns true if worker existed. */
+  /** Kill a worker by ID. Returns true if worker existed and kill was initiated.
+   *
+   *  Sends SIGTERM, then escalates to SIGKILL after a 5s grace period IF the
+   *  process hasn't exited yet. The escalation timer is tracked on
+   *  `pendingKillTimers` so `destroy()` can clear it. */
   kill(workerId: string): boolean {
     const info = this.workers.get(workerId);
-    if (!info || info.state === "dead") return false;
+    if (!info || info.state === "dead" || info.killing) return false;
+    info.killing = true;
     try {
-      info.state = "dead";
       // P3: Record error and clean up progress tracker
       const agentId = info.config.agentId;
       if (agentId) {
         recordError(agentId, "worker_killed");
       }
       process.kill(info.pid!, "SIGTERM");
-      setTimeout(() => {
-        if (info.state !== "dead") { try { process.kill(info.pid!, "SIGKILL"); } catch {} }
+      // Escalate to SIGKILL after grace period if the process hasn't exited.
+      // `info.exitCode === undefined` means the close event hasn't fired yet
+      // (i.e. the process is still alive) — that's the correct condition for
+      // force-killing. The previous code checked `info.state !== "dead"`, but
+      // nothing set state to dead here, so SIGKILL never fired — a real bug.
+      const timer = setTimeout(() => {
+        this.pendingKillTimers.delete(timer);
+        if (info.exitCode === undefined) {
+          try { process.kill(info.pid!, "SIGKILL"); } catch {}
+        }
       }, 5000);
+      if (timer.unref) timer.unref();
+      this.pendingKillTimers.add(timer);
       return true;
     } catch { return false; }
   }
@@ -477,21 +499,38 @@ export class WorkerPool {
   async waitFor(workerId: string, timeoutMs?: number): Promise<WorkerInfo> {
     const info = this.workers.get(workerId);
     if (!info) throw new Error(`Worker not found: ${workerId}`);
-    
+
     if (timeoutMs && timeoutMs > 0) {
-      // Race between donePromise and timeout
+      // Race between donePromise and timeout. The timeout timer is cleared in
+      // `finally` so it doesn't keep the event loop alive or leak after success.
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(`Worker ${workerId} timed out after ${timeoutMs}ms`)), timeoutMs);
+        timer = setTimeout(
+          () => reject(new Error(`Worker ${workerId} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+        if (timer.unref) timer.unref();
       });
-      await Promise.race([info.donePromise, timeoutPromise]);
-    } else {
-      await info.donePromise;
+      try {
+        await Promise.race([info.donePromise, timeoutPromise]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        // The caller abandoned this worker on timeout; suppress the late
+        // rejection (if any) to avoid an unhandled-rejection warning.
+        info.donePromise?.catch(() => {});
+      }
+      return info;
     }
+    await info.donePromise;
     return info;
   }
 
   destroy() {
     for (const [id] of this.workers) this.kill(id);
+    // Clear any pending SIGKILL escalation timers so destroy() doesn't leave
+    // handles dangling on the event loop.
+    for (const timer of this.pendingKillTimers) clearTimeout(timer);
+    this.pendingKillTimers.clear();
     this.workers.clear();
   }
 }

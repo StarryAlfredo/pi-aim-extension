@@ -38,6 +38,10 @@ export interface WorkerConfig {
   rpcMode?: boolean;
   /** Agent ID for transcript persistence and resume */
   agentId?: string;
+  /** Team name this worker belongs to (passed to the child process via the
+   *  TEAMMATE_TEAM env var so teammates can locate their mailbox).
+   *  Typed field — previously threaded via an unsafe `(config as Record).team_name` cast. */
+  team_name?: string;
 }
 
 /** Runtime state of a managed worker */
@@ -64,6 +68,10 @@ export interface WorkerInfo {
   rpcSend?: (json: string) => void;
   /** Number of agent_end events received */
   turnCount?: number;
+  /** True once kill() has been called and SIGTERM sent (idempotency guard —
+   *  prevents double-kill and lets the SIGKILL escalation timer distinguish
+   *  "killed by us, awaiting exit" from a genuinely dead worker). */
+  killing?: boolean;
 }
 
 // ============================================================================

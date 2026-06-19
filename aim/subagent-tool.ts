@@ -215,7 +215,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
         if (params.tasks.length > MAX_PARALLEL_TASKS) {
           return { content: [{ type: "text", text: `Max ${MAX_PARALLEL_TASKS} tasks.` }], details: { mode: "parallel", error: true } };
         }
-        const results = await mapWithConcurrencyLimit(params.tasks as any[], MAX_CONCURRENCY, async (t: any) =>
+        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t) =>
           executeAgent(
             { ...execCtx, onUpdate: adaptUpdate(onUpdate, "parallel", "[parallel] ") },
             { agent: t.agent, task: t.task, cwd: t.cwd, model: t.model, tools: t.tools },
@@ -262,7 +262,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 
     // ========== RENDER ==========
 
-    renderCall(args: any, theme: any, _context: any) {
+    renderCall(args, theme, _context) {
       const scope: AgentScope = args.agentScope ?? "user";
       if (args.resume) {
         return new Text(theme.fg("toolTitle", theme.bold("subagent resume ")) + theme.fg("accent", args.resume) + theme.fg("dim", ` ${(args.task ?? "").slice(0, 60)}`), 0, 0);
@@ -289,9 +289,12 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
       return new Text(t, 0, 0);
     },
 
-    renderResult(result: any, { expanded }: { expanded: boolean }, theme: any, _ctx: any) {
+    renderResult(result, { expanded }, theme, _ctx) {
       const details = result.details as Record<string, unknown> | undefined;
-      if (!details) return new Text(result.content[0]?.type === "text" ? result.content[0].text : "(no output)", 0, 0);
+      if (!details) {
+        const c = result.content[0];
+        return new Text(c?.type === "text" ? c.text : "(no output)", 0, 0);
+      }
       const mdTheme = getMarkdownTheme();
 
       if (details.mode === "single" || details.mode === "resume") {

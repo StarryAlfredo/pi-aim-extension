@@ -68,9 +68,9 @@ export { readMailbox, writeToMailbox, markMessageAsRead, isShutdownRequest, isPe
 export { discoverAgents, formatAgentList } from "./agents.js";
 export { createTeam, deleteTeam, spawnTeammate, getActiveTeam } from "./teams.js";
 export { pollInbox, sendIdleNotification } from "./poller.js";
-export { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVerification, registerMarkNudgeSent, type TaskNotification } from "./task-notifications.js";
+export { notifyTaskAssignment, notifyTaskUnblocked, notifyTaskCompleted, nudgeVerification, registerMarkNudgeSent, TaskNotifier, type TaskNotification } from "./task-notifications.js";
 export { startLeadPoller, type LeadPollerConfig, type PermissionRequestHandler } from "./lead-poller.js";
-export { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, type DistributionResult } from "./task-distributor.js";
+export { handleIdleAgent, distributeAvailableTasks, handleTaskCompleted, TaskDistributor, type DistributionResult } from "./task-distributor.js";
 export { requestPermissionViaMailbox, isTeammateProcess, needsMailboxPermission, type PermissionResult } from "./permission-sync.js";
 export { registerTaskCreateTool } from "./task-create-tool.js";
 export { registerTaskUpdateTool } from "./task-update-tool.js";
@@ -96,12 +96,13 @@ export {
   DisplayManager, displayManager,
   type TaskDisplayState, type TransitionResult,
 } from "./task-foreground.js";
-export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult } from "./aim-transcript.js";
+export { writeAgentMetadata, readAgentMetadata, appendToTranscript, readTranscript, recordSubagentSpawn, recordSubagentResult, TranscriptStore } from "./aim-transcript.js";
 export {
   listTasks, createTask, updateTask, claimTask, findAvailableTask,
   deleteTask, blockTask, unblockTask, findUnblockedTasks, isAgentBusy, getAgentTasks, getTask,
   cleanupStaleTasks,
   isTerminalStatus, canTransition, VALID_TRANSITIONS,
+  TaskStore,
   type TaskItem, type TaskStatus, type TaskType, type CreateTaskOptions,
   registerTaskCreatedHook, registerTaskCompletedHook, registerTaskTransitionHook,
   unregisterTaskCreatedHook, unregisterTaskCompletedHook, unregisterTaskTransitionHook,
@@ -122,6 +123,7 @@ export {
   readPersistedResult, isResultPersisted, getPersistedResultPath,
   formatOverflowDisplay, formatBatchOverflowDisplay,
   cleanupResultFiles,
+  ResultStore,
   PER_AGENT_INLINE_LIMIT, PER_AGENT_PREVIEW_BYTES, PER_MESSAGE_BUDGET,
   type OverflowResult, type BatchOverflowResult,
 } from "./task-result-storage.js";

@@ -141,15 +141,13 @@ export async function spawnTeammate(
     cwd: config.cwd ?? cwd,
     background: true,
     agentId,
+    // Pass team_name at spawn time so worker-pool sets the TEAMMATE_TEAM env
+    // var on the child process. Previously this was set AFTER spawn via an
+    // unsafe cast on workerInfo.config — too late: worker-pool reads it during
+    // spawn(), so TEAMMATE_TEAM was never set and teammates could not detect
+    // their team membership for mailbox-based permission requests.
+    team_name: teamName,
   });
-
-  // P2: Pass team_name to the worker config so the child process
-  // can detect it's a teammate (via TEAMMATE_TEAM env var set by
-  // worker-pool.ts). This enables mailbox-based permission requests.
-  const workerInfo = workerPool.getInfo(workerId);
-  if (workerInfo) {
-    (workerInfo.config as unknown as Record<string, unknown>).team_name = teamName;
-  }
 
   // Register in team file
   const team = await readTeamFile(cwd, teamName);

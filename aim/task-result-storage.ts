@@ -16,6 +16,11 @@
  *   - subagent-tool.ts: calls handleResultOverflow() / handleBatchOverflow() for display
  *   - task-output-tool.ts: calls readPersistedResult() for completed tasks
  *   - render.ts: calls isResultPersisted() to show file reference in TUI
+ *
+ * Refactor: the nine free functions all threaded `cwd`. They are now methods
+ * on `ResultStore` (cwd bound at construction), with thin function facades
+ * re-exported for backward compatibility. The format helpers remain pure
+ * stateless functions.
  */
 
 import * as fs from "node:fs";
@@ -78,7 +83,7 @@ export interface ResultFileMeta {
 }
 
 // ============================================================================
-// Path Helpers
+// Path Helpers (stateless — kept as functions, used by cleanup callers)
 // ============================================================================
 
 /** Get the result outputs directory for a project */
@@ -102,270 +107,273 @@ function ensureResultDir(cwd: string): void {
 }
 
 // ============================================================================
-// Core: Single Result Overflow
+// ResultStore Class
 // ============================================================================
 
 /**
- * Handle overflow for a single agent result.
- *
- * If the output exceeds PER_AGENT_INLINE_LIMIT:
- *   1. Persist the full output to disk
- *   2. Return a preview + file path reference
- *
- * If the output is within limits:
- *   1. Return the full output inline
- *
- * @param cwd Working directory
- * @param agentId Agent ID (used for file naming)
- * @param fullOutput The complete output text
- * @param options Optional overrides for thresholds
+ * Manages persisted oversized subagent results for a given working directory.
+ * The cwd is bound at construction so callers stop threading it through
+ * every call.
  */
-export function handleResultOverflow(
-  cwd: string,
-  agentId: string,
-  fullOutput: string,
-  options?: {
-    inlineLimit?: number;
-    previewBytes?: number;
-  },
-): OverflowResult {
-  const inlineLimit = options?.inlineLimit ?? PER_AGENT_INLINE_LIMIT;
-  const previewBytes = options?.previewBytes ?? PER_AGENT_PREVIEW_BYTES;
+export class ResultStore {
+  constructor(private readonly cwd: string) {}
 
-  // Small result: full inline
-  if (fullOutput.length <= inlineLimit) {
+  /**
+   * Handle overflow for a single agent result.
+   *
+   * If the output exceeds PER_AGENT_INLINE_LIMIT:
+   *   1. Persist the full output to disk
+   *   2. Return a preview + file path reference
+   *
+   * If the output is within limits:
+   *   1. Return the full output inline
+   */
+  handleOverflow(
+    agentId: string,
+    fullOutput: string,
+    options?: { inlineLimit?: number; previewBytes?: number },
+  ): OverflowResult {
+    const inlineLimit = options?.inlineLimit ?? PER_AGENT_INLINE_LIMIT;
+    const previewBytes = options?.previewBytes ?? PER_AGENT_PREVIEW_BYTES;
+
+    // Small result: full inline
+    if (fullOutput.length <= inlineLimit) {
+      return {
+        display: fullOutput,
+        fullLength: fullOutput.length,
+        persisted: false,
+        budgetTruncated: false,
+      };
+    }
+
+    // Large result: persist to disk, return preview + reference
+    ensureResultDir(this.cwd);
+    const filePath = getResultFilePath(this.cwd, agentId);
+    fs.writeFileSync(filePath, fullOutput, "utf-8");
+
+    const preview = fullOutput.slice(0, previewBytes);
+    const relPath = `.pi/aim/${RESULT_OUTPUTS_DIR}/${agentId}-output.txt`;
+
     return {
-      display: fullOutput,
+      display: [
+        preview,
+        ``,
+        `... (truncated, ${fullOutput.length.toLocaleString()} chars total)`,
+        `Full output: ${relPath}`,
+        `Use the read tool to access the full output.`,
+      ].join("\n"),
       fullLength: fullOutput.length,
-      persisted: false,
+      persisted: true,
+      filePath: relPath,
       budgetTruncated: false,
     };
   }
 
-  // Large result: persist to disk, return preview + reference
-  ensureResultDir(cwd);
-  const filePath = getResultFilePath(cwd, agentId);
-  fs.writeFileSync(filePath, fullOutput, "utf-8");
+  /**
+   * Handle overflow for a batch of agent results (parallel mode).
+   *
+   * Phase 1: Persist any individual results exceeding PER_AGENT_INLINE_LIMIT
+   * Phase 2: Apply per-message budget — if total inline exceeds budget,
+   *          truncate all items to preview-only mode
+   */
+  handleBatch(
+    items: Array<{ agentId: string; fullOutput: string; agentName: string; exitCode: number }>,
+    options?: { inlineLimit?: number; previewBytes?: number; messageBudget?: number },
+  ): BatchOverflowResult {
+    const messageBudget = options?.messageBudget ?? PER_MESSAGE_BUDGET;
 
-  const preview = fullOutput.slice(0, previewBytes);
-  const relPath = `.pi/aim/${RESULT_OUTPUTS_DIR}/${agentId}-output.txt`;
+    // Phase 1: Per-agent overflow handling
+    const overflowItems: OverflowResult[] = items.map(item =>
+      this.handleOverflow(item.agentId, item.fullOutput, options),
+    );
 
-  return {
-    display: [
-      preview,
-      ``,
-      `... (truncated, ${fullOutput.length.toLocaleString()} chars total)`,
-      `Full output: ${relPath}`,
-      `Use the read tool to access the full output.`,
-    ].join("\n"),
-    fullLength: fullOutput.length,
-    persisted: true,
-    filePath: relPath,
-    budgetTruncated: false,
-  };
+    // Phase 2: Per-message budget check
+    let totalInlineSize = overflowItems.reduce((sum, item) => sum + item.display.length, 0);
+    let overBudget = totalInlineSize > messageBudget;
+
+    if (overBudget) {
+      // Budget exceeded: truncate largest items first, preserve small results.
+      // Sort by display size descending — truncate the biggest ones first
+      // to minimize information loss.
+      const previewBytes = options?.previewBytes ?? PER_AGENT_PREVIEW_BYTES;
+      const SMALL_RESULT_THRESHOLD = previewBytes * 2; // Results under this are kept intact
+
+      // Sort indices by display size descending (biggest first for truncation)
+      const sortedIndices = overflowItems
+        .map((item, i) => ({ item, i }))
+        .sort((a, b) => b.item.display.length - a.item.display.length);
+
+      for (const { i } of sortedIndices) {
+        if (totalInlineSize <= messageBudget) break; // Budget satisfied
+
+        const item = items[i]!;
+        const overflow = overflowItems[i]!;
+
+        // Skip small results — they're not contributing much to budget overflow
+        if (overflow.display.length <= SMALL_RESULT_THRESHOLD && !overflow.persisted) continue;
+
+        // If not already persisted, persist now
+        if (!overflow.persisted && item.fullOutput.length > 0) {
+          ensureResultDir(this.cwd);
+          const filePath = getResultFilePath(this.cwd, item.agentId);
+          fs.writeFileSync(filePath, item.fullOutput, "utf-8");
+          overflow.persisted = true;
+          overflow.filePath = `.pi/aim/${RESULT_OUTPUTS_DIR}/${item.agentId}-output.txt`;
+        }
+
+        // Truncate display to preview
+        const preview = item.fullOutput.slice(0, previewBytes);
+        overflow.display = [
+          preview,
+          ``,
+          `... (${item.fullOutput.length.toLocaleString()} chars total)`,
+          overflow.filePath ? `Full output: ${overflow.filePath}` : "",
+        ].filter(Boolean).join("\n");
+        overflow.budgetTruncated = true;
+      }
+
+      // Recalculate total size (and budget flag) after truncation
+      totalInlineSize = overflowItems.reduce((sum, item) => sum + item.display.length, 0);
+      overBudget = totalInlineSize > messageBudget;
+    }
+
+    return { items: overflowItems, totalInlineSize, overBudget };
+  }
+
+  /** Read a persisted result file from disk. Returns null if absent. */
+  readPersisted(agentId: string): string | null {
+    const filePath = getResultFilePath(this.cwd, agentId);
+    try {
+      return fs.readFileSync(filePath, "utf-8");
+    } catch {
+      return null;
+    }
+  }
+
+  /** Check if a result has been persisted to disk. */
+  isPersisted(agentId: string): boolean {
+    const filePath = getResultFilePath(this.cwd, agentId);
+    try {
+      fs.accessSync(filePath, fs.constants.R_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Get the file path for a persisted result, or null if not persisted. */
+  getPersistedPath(agentId: string): string | null {
+    if (this.isPersisted(agentId)) {
+      return `.pi/aim/${RESULT_OUTPUTS_DIR}/${agentId}-output.txt`;
+    }
+    return null;
+  }
+
+  /** List all persisted result files with metadata. */
+  listFiles(): ResultFileMeta[] {
+    const dir = getResultOutputsDir(this.cwd);
+    if (!fs.existsSync(dir)) return [];
+
+    const results: ResultFileMeta[] = [];
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith("-output.txt")) continue;
+        try {
+          const filePath = path.join(dir, f);
+          const stat = fs.statSync(filePath);
+          const agentId = f.replace("-output.txt", "");
+          results.push({
+            agentId,
+            createdAt: stat.birthtimeMs || stat.mtimeMs,
+            sizeBytes: stat.size,
+          });
+        } catch {}
+      }
+    } catch {}
+
+    return results.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** Clean up result files older than maxAgeMs. Returns count removed. */
+  cleanup(maxAgeMs = DEFAULT_MAX_AGE_MS): number {
+    const now = Date.now();
+    const files = this.listFiles();
+    let removed = 0;
+
+    for (const meta of files) {
+      if (now - meta.createdAt > maxAgeMs) {
+        try {
+          fs.unlinkSync(getResultFilePath(this.cwd, meta.agentId));
+          removed++;
+        } catch {}
+      }
+    }
+
+    return removed;
+  }
+
+  /** Delete a specific result file. */
+  deleteFile(agentId: string): boolean {
+    const filePath = getResultFilePath(this.cwd, agentId);
+    try {
+      fs.unlinkSync(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 // ============================================================================
-// Core: Batch Overflow (Parallel Mode)
+// Backward-Compatible Functional API (thin facades over ResultStore)
 // ============================================================================
 
-/**
- * Handle overflow for a batch of agent results (parallel mode).
- *
- * Phase 1: Persist any individual results exceeding PER_AGENT_INLINE_LIMIT
- * Phase 2: Apply per-message budget — if total inline exceeds budget,
- *          truncate all items to preview-only mode
- *
- * @param cwd Working directory
- * @param items Array of { agentId, fullOutput } pairs
- * @param options Optional overrides
- */
+export function handleResultOverflow(
+  cwd: string,
+  agentId: string,
+  fullOutput: string,
+  options?: { inlineLimit?: number; previewBytes?: number },
+): OverflowResult {
+  return new ResultStore(cwd).handleOverflow(agentId, fullOutput, options);
+}
+
 export function handleBatchOverflow(
   cwd: string,
   items: Array<{ agentId: string; fullOutput: string; agentName: string; exitCode: number }>,
-  options?: {
-    inlineLimit?: number;
-    previewBytes?: number;
-    messageBudget?: number;
-  },
+  options?: { inlineLimit?: number; previewBytes?: number; messageBudget?: number },
 ): BatchOverflowResult {
-  const messageBudget = options?.messageBudget ?? PER_MESSAGE_BUDGET;
-
-  // Phase 1: Per-agent overflow handling
-  const overflowItems: OverflowResult[] = items.map(item => {
-    return handleResultOverflow(cwd, item.agentId, item.fullOutput, options);
-  });
-
-  // Phase 2: Per-message budget check
-  let totalInlineSize = overflowItems.reduce((sum, item) => sum + item.display.length, 0);
-  let overBudget = totalInlineSize > messageBudget;
-
-  if (overBudget) {
-    // Budget exceeded: truncate largest items first, preserve small results.
-    // Sort by display size descending — truncate the biggest ones first
-    // to minimize information loss.
-    const previewBytes = options?.previewBytes ?? PER_AGENT_PREVIEW_BYTES;
-    const SMALL_RESULT_THRESHOLD = previewBytes * 2; // Results under this are kept intact
-
-    // Sort indices by display size descending (biggest first for truncation)
-    const sortedIndices = overflowItems
-      .map((item, i) => ({ item, i }))
-      .sort((a, b) => b.item.display.length - a.item.display.length);
-
-    for (const { i } of sortedIndices) {
-      if (totalInlineSize <= messageBudget) break; // Budget satisfied
-
-      const item = items[i]!;
-      const overflow = overflowItems[i]!;
-
-      // Skip small results — they're not contributing much to budget overflow
-      if (overflow.display.length <= SMALL_RESULT_THRESHOLD && !overflow.persisted) continue;
-
-      // If not already persisted, persist now
-      if (!overflow.persisted && item.fullOutput.length > 0) {
-        ensureResultDir(cwd);
-        const filePath = getResultFilePath(cwd, item.agentId);
-        fs.writeFileSync(filePath, item.fullOutput, "utf-8");
-        overflow.persisted = true;
-        overflow.filePath = `.pi/aim/${RESULT_OUTPUTS_DIR}/${item.agentId}-output.txt`;
-      }
-
-      // Truncate display to preview
-      const preview = item.fullOutput.slice(0, previewBytes);
-      overflow.display = [
-        preview,
-        ``,
-        `... (${item.fullOutput.length.toLocaleString()} chars total)`,
-        overflow.filePath ? `Full output: ${overflow.filePath}` : "",
-      ].filter(Boolean).join("\n");
-      overflow.budgetTruncated = true;
-    }
-
-    // Recalculate total size (and budget flag) after truncation
-    totalInlineSize = overflowItems.reduce((sum, item) => sum + item.display.length, 0);
-    overBudget = totalInlineSize > messageBudget;
-  }
-
-  return { items: overflowItems, totalInlineSize, overBudget };
+  return new ResultStore(cwd).handleBatch(items, options);
 }
 
-// ============================================================================
-// Reading Persisted Results
-// ============================================================================
-
-/**
- * Read a persisted result file from disk.
- * Returns null if the file doesn't exist.
- *
- * Used by task-output-tool to retrieve full output for completed tasks.
- */
 export function readPersistedResult(cwd: string, agentId: string): string | null {
-  const filePath = getResultFilePath(cwd, agentId);
-  try {
-    return fs.readFileSync(filePath, "utf-8");
-  } catch {
-    return null;
-  }
+  return new ResultStore(cwd).readPersisted(agentId);
 }
 
-/**
- * Check if a result has been persisted to disk.
- */
 export function isResultPersisted(cwd: string, agentId: string): boolean {
-  const filePath = getResultFilePath(cwd, agentId);
-  try {
-    fs.accessSync(filePath, fs.constants.R_OK);
-    return true;
-  } catch {
-    return false;
-  }
+  return new ResultStore(cwd).isPersisted(agentId);
 }
 
-/**
- * Get the file path for a persisted result, or null if not persisted.
- */
 export function getPersistedResultPath(cwd: string, agentId: string): string | null {
-  if (isResultPersisted(cwd, agentId)) {
-    return `.pi/aim/${RESULT_OUTPUTS_DIR}/${agentId}-output.txt`;
-  }
-  return null;
+  return new ResultStore(cwd).getPersistedPath(agentId);
 }
 
-// ============================================================================
-// Result File Lifecycle
-// ============================================================================
-
-/**
- * List all persisted result files with metadata.
- */
 export function listResultFiles(cwd: string): ResultFileMeta[] {
-  const dir = getResultOutputsDir(cwd);
-  if (!fs.existsSync(dir)) return [];
-
-  const results: ResultFileMeta[] = [];
-  try {
-    for (const f of fs.readdirSync(dir)) {
-      if (!f.endsWith("-output.txt")) continue;
-      try {
-        const filePath = path.join(dir, f);
-        const stat = fs.statSync(filePath);
-        const agentId = f.replace("-output.txt", "");
-        results.push({
-          agentId,
-          createdAt: stat.birthtimeMs || stat.mtimeMs,
-          sizeBytes: stat.size,
-        });
-      } catch {}
-    }
-  } catch {}
-
-  return results.sort((a, b) => a.createdAt - b.createdAt);
+  return new ResultStore(cwd).listFiles();
 }
 
-/**
- * Clean up result files older than maxAgeMs.
- * Returns the number of files removed.
- *
- * @param maxAgeMs Maximum age in milliseconds (default: 24 hours)
- */
 export function cleanupResultFiles(cwd: string, maxAgeMs = DEFAULT_MAX_AGE_MS): number {
-  const now = Date.now();
-  const files = listResultFiles(cwd);
-  let removed = 0;
-
-  for (const meta of files) {
-    if (now - meta.createdAt > maxAgeMs) {
-      try {
-        fs.unlinkSync(getResultFilePath(cwd, meta.agentId));
-        removed++;
-      } catch {}
-    }
-  }
-
-  return removed;
+  return new ResultStore(cwd).cleanup(maxAgeMs);
 }
 
-/**
- * Delete a specific result file.
- */
 export function deleteResultFile(cwd: string, agentId: string): boolean {
-  const filePath = getResultFilePath(cwd, agentId);
-  try {
-    fs.unlinkSync(filePath);
-    return true;
-  } catch {
-    return false;
-  }
+  return new ResultStore(cwd).deleteFile(agentId);
 }
 
 // ============================================================================
-// Format Helpers
+// Format Helpers (pure — kept as stateless functions)
 // ============================================================================
 
-/**
- * Format an overflow result for display in a tool response.
- * Includes status icon, agent name, and error hint for failures.
- */
+/** Format an overflow result for display in a tool response. */
 export function formatOverflowDisplay(
   overflow: OverflowResult,
   agentName: string,
@@ -378,10 +386,7 @@ export function formatOverflowDisplay(
   return `[${agentName}] ${statusIcon}: ${overflow.display}${errorHint}`;
 }
 
-/**
- * Format a batch overflow result for display in a parallel tool response.
- * Includes summary stats, truncation notes, and per-agent results.
- */
+/** Format a batch overflow result for display in a parallel tool response. */
 export function formatBatchOverflowDisplay(
   batch: BatchOverflowResult,
   agentNames: string[],

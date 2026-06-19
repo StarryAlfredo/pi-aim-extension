@@ -1,1 +1,50 @@
-{"compilerOptions": {"target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler", "lib": ["ES2022"], "strict": true, "skipLibCheck": true, "ignoreDeprecations": "6.0", "noEmit": true, "esModuleInterop": true, "resolveJsonModule": true, "isolatedModules": true, "allowImportingTsExtensions": false, "verbatimModuleSyntax": false, "types": ["node"], "baseUrl": ".", "paths": {"@earendil-works/pi-coding-agent": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent"], "@earendil-works/pi-ai": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai"], "@earendil-works/pi-ai/*": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/*"], "@earendil-works/pi-tui": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui"], "@earendil-works/pi-agent-core": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core"], "@mariozechner/pi-coding-agent": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent"], "@mariozechner/pi-ai": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai"], "@mariozechner/pi-ai/*": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/*"], "@mariozechner/pi-tui": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui"], "@mariozechner/pi-agent-core": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core"], "typebox": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"], "typebox/compile": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/compile"], "typebox/value": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/value"], "@sinclair/typebox": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"], "@sinclair/typebox/compile": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/compile"], "@sinclair/typebox/value": ["C:/Users/Administrator/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/value"]}}, "include": ["*.ts", "test/**/*.ts"], "exclude": ["node_modules"]}
+{
+  // Typecheck-only config. The `paths` map the `@earendil-works/*` and
+  // `typebox` imports to the GLOBAL pi install, because this extension has no
+  // runtime deps (pi provides these modules via its loader shim at runtime).
+  //
+  // PORTABILITY: if pi is installed elsewhere, run `npm root -g` and replace
+  // D:/nodeJS/node_modules below with that path. Do NOT hardcode a per-user
+  // path (the previous config pointed at another user's AppData and broke
+  // typecheck on every other machine).
+  //
+  // Fully portable alternative: `npm link` the global packages into
+  // ./node_modules and delete `paths` so node_modules resolution applies.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
+    "noEmit": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": false,
+    "verbatimModuleSyntax": false,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent"],
+      "@earendil-works/pi-ai": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai"],
+      "@earendil-works/pi-ai/*": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/*"],
+      "@earendil-works/pi-tui": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui"],
+      "@earendil-works/pi-agent-core": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core"],
+      "@mariozechner/pi-coding-agent": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent"],
+      "@mariozechner/pi-ai": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai"],
+      "@mariozechner/pi-ai/*": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/*"],
+      "@mariozechner/pi-tui": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui"],
+      "@mariozechner/pi-agent-core": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core"],
+      "typebox": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"],
+      "typebox/compile": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/compile"],
+      "typebox/value": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/value"],
+      "@sinclair/typebox": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"],
+      "@sinclair/typebox/compile": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/compile"],
+      "@sinclair/typebox/value": ["D:/nodeJS/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/value"]
+    }
+  },
+  "include": ["*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules"]
+}

@@ -240,6 +240,7 @@ async function executeResume(
     systemPrompt: params.systemPrompt ?? meta.systemPrompt,
     rpcMode: true,
     agentId,
+    team_name: params.teamName,
   });
 
   const info = workerPool.getInfo(workerId);
@@ -370,6 +371,7 @@ async function executeBackground(
     systemPrompt,
     rpcMode: true,
     agentId,
+    team_name: params.teamName,
   });
 
   const info = workerPool.getInfo(workerId);
@@ -435,6 +437,7 @@ async function executeForeground(
     systemPrompt,
     rpcMode: useRpc,
     agentId,
+    team_name: params.teamName,
   });
 
   const info = workerPool.getInfo(workerId);
